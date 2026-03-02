@@ -1,11 +1,28 @@
+import os
+import gzip
+import urllib.request
 import osmnx as ox
 import networkx as nx
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+GRAPHML_PATH = "sf_walk_network_elevation.graphml"
+GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/v1.0/sf_walk_network_elevation.graphml.gz"
+
+if not os.path.exists(GRAPHML_PATH):
+    print("Graph file not found. Downloading...")
+    gz_path = GRAPHML_PATH + ".gz"
+    urllib.request.urlretrieve(GRAPHML_GZ_URL, gz_path)
+    print("Download complete. Decompressing...")
+    with gzip.open(gz_path, 'rb') as f_in:
+        with open(GRAPHML_PATH, 'wb') as f_out:
+            f_out.write(f_in.read())
+    os.remove(gz_path)
+    print("Decompression complete.")
+
 print("Loading elevation network...")
-G = ox.load_graphml(filepath="sf_walk_network_elevation.graphml")
+G = ox.load_graphml(filepath=GRAPHML_PATH)
 
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
@@ -13,6 +30,10 @@ for u, v, k, data in G.edges(keys=True, data=True):
     data["impedance"] = length * (1 + 10 * grade ** 2)
 
 print("Network ready. Server starting...")
+
+@app.route("/health", methods=["GET"])
+def health():
+    return {"status": "ok"}
 
 @app.route("/route", methods=["GET"])
 def get_route():
