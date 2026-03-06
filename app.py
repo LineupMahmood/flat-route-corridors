@@ -25,10 +25,14 @@ if not os.path.exists(GRAPHML_PATH):
 print("Loading elevation network...")
 G = ox.load_graphml(filepath=GRAPHML_PATH)
 
+# Multiple impedance levels — low penalty finds shortest, high penalty avoids hills most aggressively
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
-    data["impedance"] = length * (1 + 10 * grade ** 2)
+    data["impedance_low"]    = length * (1 + 5   * grade ** 2)
+    data["impedance_medium"] = length * (1 + 20  * grade ** 2)
+    data["impedance_high"]   = length * (1 + 50  * grade ** 2)
+    data["impedance_max"]    = length * (1 + 100 * grade ** 2)
 
 print("Network ready. Server starting...")
 
@@ -79,24 +83,17 @@ def generate_waypoint_nodes(origin, destination):
 
     perp_lat = -lng_diff / dist
     perp_lng = lat_diff / dist
-
-    # Scale offsets to the actual distance between points
     base_offset = dist * 0.5
-    offsets = [base_offset, base_offset * 2, -base_offset, -base_offset * 2]
 
     waypoints = []
-
-    # L-shaped corners
     waypoints.append((slat, elng))
     waypoints.append((elat, slng))
 
-    # Midpoint perpendicular sweeps
     mid_lat = (slat + elat) / 2
     mid_lng = (slng + elng) / 2
-    for offset in offsets:
+    for offset in [base_offset, base_offset*2, -base_offset, -base_offset*2]:
         waypoints.append((mid_lat + perp_lat * offset, mid_lng + perp_lng * offset))
 
-    # Quarter and three-quarter points
     for fraction in [0.25, 0.75]:
         base_lat = slat + lat_diff * fraction
         base_lng = slng + lng_diff * fraction
@@ -151,29 +148,26 @@ def get_route():
 
         all_routes = []
 
-        # Base routes
-        flat_route = ox.routing.shortest_path(G, origin, destination, weight="impedance")
-        short_route = ox.routing.shortest_path(G, origin, destination, weight="length")
-        if flat_route:
-            all_routes.append(route_to_coords(flat_route))
-        if short_route:
-            all_routes.append(route_to_coords(short_route))
-
-        # Waypoint routes
-        waypoint_nodes = generate_waypoint_nodes(origin, destination)
-        for wp_node in waypoint_nodes:
-            r = get_route_via_waypoint(origin, destination, wp_node, "impedance")
+        # Try all penalty levels — higher penalty = more aggressive hill avoidance
+        for weight in ["impedance_low", "impedance_medium", "impedance_high", "impedance_max", "length"]:
+            r = ox.routing.shortest_path(G, origin, destination, weight=weight)
             if r:
                 all_routes.append(route_to_coords(r))
 
-        # Deduplicate and sort by elevation
+        # Waypoint routes with high penalty
+        waypoint_nodes = generate_waypoint_nodes(origin, destination)
+        for wp_node in waypoint_nodes:
+            for weight in ["impedance_high", "impedance_max"]:
+                r = get_route_via_waypoint(origin, destination, wp_node, weight)
+                if r:
+                    all_routes.append(route_to_coords(r))
+
         unique_routes = deduplicate_routes(all_routes)
         unique_routes.sort(key=lambda r: r["elevationGainFt"])
 
         if len(unique_routes) < 1:
             return jsonify({"error": "No routes found"}), 500
 
-        # Filter out routes more than 2.5x the shortest distance
         min_dist = min(r["distanceInMiles"] for r in unique_routes)
         min_gain = unique_routes[0]["elevationGainFt"]
         filtered = [r for r in unique_routes
@@ -183,7 +177,7 @@ def get_route():
         flat = filtered[0]
         short = min(filtered, key=lambda r: r["distanceInMiles"])
 
-        print(f"✅ Returning {len(filtered)} routes")
+        print(f"✅ Returning {len(filtered)} routes, flattest: {flat['elevationGainFt']}ft")
         return jsonify({
             "flatRoute": flat,
             "shortRoute": short,
