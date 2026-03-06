@@ -22,16 +22,27 @@ if not os.path.exists(GRAPHML_PATH):
     os.remove(gz_path)
     print("Decompression complete.")
 
-print("Loading elevation network...")
-G = ox.load_graphml(filepath=GRAPHML_PATH)
+import pickle
 
-for u, v, k, data in G.edges(keys=True, data=True):
-    grade = float(data.get("grade_abs", 0))
-    length = float(data.get("length", 0))
-    # Exponential penalty — a 10% grade is 7x worse than 5% grade
-    # This forces the algorithm onto genuinely flat streets
-    data["impedance_high"] = length * (1 + 200 * grade ** 2)
-    data["impedance_max"]  = length * (1 + 500 * grade ** 2)
+PICKLE_PATH = "sf_walk_network.pkl"
+
+print("Loading elevation network...")
+if os.path.exists(PICKLE_PATH):
+    print("Found pickle cache, loading fast...")
+    with open(PICKLE_PATH, "rb") as f:
+        G = pickle.load(f)
+    print("Pickle loaded.")
+else:
+    print("No pickle found, loading from graphml (slow, one-time)...")
+    G = ox.load_graphml(filepath=GRAPHML_PATH)
+    for u, v, k, data in G.edges(keys=True, data=True):
+        grade = float(data.get("grade_abs", 0))
+        length = float(data.get("length", 0))
+        data["impedance_high"] = length * (1 + 200 * grade ** 2)
+        data["impedance_max"]  = length * (1 + 500 * grade ** 2)
+    print("Saving pickle cache for fast future loads...")
+    with open(PICKLE_PATH, "wb") as f:
+        pickle.dump(G, f)
 
 print("Network ready. Server starting...")
 
