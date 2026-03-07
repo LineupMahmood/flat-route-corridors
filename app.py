@@ -38,8 +38,8 @@ else:
     for u, v, k, data in G.edges(keys=True, data=True):
         grade = float(data.get("grade_abs", 0))
         length = float(data.get("length", 0))
-        data["impedance_high"] = length * (1 + 200 * grade ** 2)
-        data["impedance_max"]  = length * (1 + 500 * grade ** 2)
+        data["impedance_high"] = length * (1 + 5000 * grade ** 2)
+        data["impedance_max"]  = length * (1 + 15000 * grade ** 2)
     print("Saving pickle cache for fast future loads...")
     with open(PICKLE_PATH, "wb") as f:
         pickle.dump(G, f)
