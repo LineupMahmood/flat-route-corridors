@@ -76,6 +76,36 @@ def analyze_route(route):
         "_difficulty": avg_grade * 0.7 + max_grade * 0.3
     }
 
+def has_backtrack(route, destination, threshold=0.25):
+    """
+    Returns True if the route backtracks significantly.
+    At any point, if distance to destination increases by more than
+    threshold * total_direct_distance, it's backtracking.
+    """
+    dest_lat = G.nodes[destination]["y"]
+    dest_lng = G.nodes[destination]["x"]
+    start_lat = G.nodes[route[0]]["y"]
+    start_lng = G.nodes[route[0]]["x"]
+
+    direct_dist = math.sqrt(
+        ((dest_lat - start_lat) * 111000) ** 2 +
+        ((dest_lng - start_lng) * 111000 * math.cos(math.radians(start_lat))) ** 2
+    )
+    max_allowed_increase = direct_dist * threshold
+
+    prev_dist = direct_dist
+    for node in route[1:]:
+        nlat = G.nodes[node]["y"]
+        nlng = G.nodes[node]["x"]
+        dist = math.sqrt(
+            ((dest_lat - nlat) * 111000) ** 2 +
+            ((dest_lng - nlng) * 111000 * math.cos(math.radians(nlat))) ** 2
+        )
+        if dist > prev_dist + max_allowed_increase:
+            return True
+        prev_dist = dist
+    return False
+
 def get_route_via_waypoint(origin, destination, waypoint_node, weight):
     try:
         if waypoint_node in (origin, destination):
@@ -236,8 +266,10 @@ def get_route():
         # Base routes
         for weight in ["impedance_high", "impedance_max", "length"]:
             r = ox.routing.shortest_path(G, origin, destination, weight=weight)
-            print(f"DEBUG {weight}: {'found ' + str(len(r)) + ' nodes' if r else 'None'}")
             if r:
+                if has_backtrack(r, destination):
+                    print(f"⚠️ Skipping backtracking {weight} route")
+                    continue
                 all_routes.append(analyze_route(r))
 
         unique_routes = deduplicate_routes(all_routes)
