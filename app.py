@@ -309,7 +309,11 @@ def get_route():
                 except:
                     pass
 
+        print(f"📊 Before dedup: {len(all_routes)} routes")
+        for r in all_routes:
+            print(f"   {r['distanceInMiles']}mi avg={r['avgGradePct']}% max={r['maxGradePct']}%")
         unique_routes = deduplicate_routes(all_routes)
+        print(f"📊 After dedup: {len(unique_routes)} routes")
         unique_routes.sort(key=lambda r: r["_difficulty"])
 
         if not unique_routes:
