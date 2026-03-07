@@ -55,9 +55,9 @@ def analyze_route(route):
         u, v = route[i], route[i+1]
         edge_data = G.get_edge_data(u, v)
         edge = edge_data[0] if edge_data else {}
-        length = float(edge.get("length", 0))
-        grade = float(edge.get("grade", 0))
-        grade_abs = abs(float(edge.get("grade_abs", abs(grade))))
+        length = float(edge.get("length") or 0)
+        grade = float(edge.get("grade") or 0)
+        grade_abs = abs(float(edge.get("grade_abs") or abs(grade)))
         if length * grade > 0:
             total_gain += length * grade
         total_length += length
