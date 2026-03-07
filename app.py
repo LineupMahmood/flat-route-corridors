@@ -207,7 +207,14 @@ def deduplicate_routes(routes):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "version": "v3-hard-constraint"}
+    # Sample 5 edges to check grade data
+    sample = []
+    for u, v, data in list(G.edges(data=True))[:5]:
+        sample.append({
+            "grade_abs": data.get("grade_abs"),
+            "impedance_high": data.get("impedance_high")
+        })
+    return {"status": "ok", "version": "v3-hard-constraint", "sample_edges": sample}
 
 @app.route("/route", methods=["GET"])
 def get_route():
