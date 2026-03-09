@@ -93,7 +93,23 @@ def analyze_route(route):
 
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
-    raw_coords = [{"lat": G.nodes[n]["y"], "lng": G.nodes[n]["x"]} for n in route]
+    raw_coords = []
+    for i in range(len(route) - 1):
+        u, v = route[i], route[i+1]
+        edge_data = G.get_edge_data(u, v)
+        edge = edge_data[0] if edge_data else {}
+        geom = edge.get("geometry")
+        if geom is not None:
+            pts = list(geom.coords)
+            # Check if edge geometry goes u→v or v→u
+            u_lat, u_lng = G.nodes[u]["y"], G.nodes[u]["x"]
+            if abs(pts[0][0] - u_lng) > abs(pts[-1][0] - u_lng):
+                pts = pts[::-1]
+            for lng, lat in pts[:-1]:
+                raw_coords.append({"lat": lat, "lng": lng})
+        else:
+            raw_coords.append({"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]})
+    raw_coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
     coords = smooth_coords(raw_coords)
     return {
         "coordinates": coords,
