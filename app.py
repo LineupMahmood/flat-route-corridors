@@ -46,7 +46,34 @@ else:
 
 print("Network ready. Server starting...")
 
+def smooth_coords(coords):
+    """
+    Remove nodes that cause a significant backtrack toward the destination.
+    Handles divided boulevards (like Octavia) where OSM maps both sides as
+    separate edges, causing the route to briefly snap to the wrong side.
+    """
+    if len(coords) < 3:
+        return coords
 
+    dest = coords[-1]
+
+    def dist_to_dest(c):
+        dlat = (c["lat"] - dest["lat"]) * 111000
+        dlng = (c["lng"] - dest["lng"]) * 111000 * math.cos(math.radians(c["lat"]))
+        return math.sqrt(dlat**2 + dlng**2)
+
+    smoothed = [coords[0]]
+    for i in range(1, len(coords) - 1):
+        prev_dist = dist_to_dest(smoothed[-1])
+        curr_dist = dist_to_dest(coords[i])
+        next_dist = dist_to_dest(coords[i + 1])
+        # Skip this node if it moves away from dest AND the next node is closer than current
+        if curr_dist > prev_dist + 30 and next_dist < curr_dist:
+            print(f"🔧 Smoothed out backtrack node at {coords[i]['lat']:.5f}, {coords[i]['lng']:.5f}")
+            continue
+        smoothed.append(coords[i])
+    smoothed.append(coords[-1])
+    return smoothed
 def analyze_route(route):
     total_gain = 0
     total_length = 0
@@ -66,7 +93,8 @@ def analyze_route(route):
 
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
-    coords = [{"lat": G.nodes[n]["y"], "lng": G.nodes[n]["x"]} for n in route]
+    raw_coords = [{"lat": G.nodes[n]["y"], "lng": G.nodes[n]["x"]} for n in route]
+    coords = smooth_coords(raw_coords)
     return {
         "coordinates": coords,
         "distanceInMiles": round(total_length / 1609.34, 2),
