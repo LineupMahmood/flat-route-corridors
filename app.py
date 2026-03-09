@@ -8,8 +8,8 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-GRAPHML_PATH = "sf_walk_network_elevation.graphml"
-GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/v1.0/sf_walk_network_elevation.graphml.gz"
+GRAPHML_PATH = "sf_walk_network_elevation_v3.graphml"
+GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/v3/sf_walk_network_elevation_v3.graphml.gz"
 
 if not os.path.exists(GRAPHML_PATH):
     print("Graph file not found. Downloading...")
@@ -24,7 +24,7 @@ if not os.path.exists(GRAPHML_PATH):
 
 import pickle
 
-PICKLE_PATH = "sf_walk_network_v3.pkl"
+PICKLE_PATH = "sf_walk_network_v4.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
@@ -253,7 +253,7 @@ def health():
             "grade_abs": data.get("grade_abs"),
             "impedance_high": data.get("impedance_high")
         })
-    return {"status": "ok", "version": "v4-backtrack-filter", "sample_edges": sample}
+    return {"status": "ok", "version": "v5-consolidated-graph", "sample_edges": sample}
 
 @app.route("/route", methods=["GET"])
 def get_route():
