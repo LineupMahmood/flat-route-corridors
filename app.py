@@ -46,38 +46,34 @@ else:
 
 print("Network ready. Server starting...")
 
-def smooth_coords(coords):
+
+def get_edge_coords(u, v):
     """
-    Remove nodes that cause a significant backtrack toward the destination.
-    Handles divided boulevards (like Octavia) where OSM maps both sides as
-    separate edges, causing the route to briefly snap to the wrong side.
+    Returns the full list of (lat, lng) dicts for the edge between u and v,
+    using the edge geometry if available, otherwise just the node coords.
+    Handles direction automatically.
     """
-    if len(coords) < 3:
-        return coords
+    edge_data = G.get_edge_data(u, v)
+    edge = edge_data[0] if edge_data else {}
+    geom = edge.get("geometry")
 
-    dest = coords[-1]
+    if geom is not None:
+        pts = list(geom.coords)  # each pt is (lng, lat)
+        # Determine correct direction: compare first pt to u's position
+        u_lng = G.nodes[u]["x"]
+        if len(pts) >= 2 and abs(pts[0][0] - u_lng) > abs(pts[-1][0] - u_lng):
+            pts = pts[::-1]
+        return [{"lat": lat, "lng": lng} for lng, lat in pts]
+    else:
+        return [{"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]}]
 
-    def dist_to_dest(c):
-        dlat = (c["lat"] - dest["lat"]) * 111000
-        dlng = (c["lng"] - dest["lng"]) * 111000 * math.cos(math.radians(c["lat"]))
-        return math.sqrt(dlat**2 + dlng**2)
 
-    smoothed = [coords[0]]
-    for i in range(1, len(coords) - 1):
-        prev_dist = dist_to_dest(smoothed[-1])
-        curr_dist = dist_to_dest(coords[i])
-        next_dist = dist_to_dest(coords[i + 1])
-        # Skip this node if it moves away from dest AND the next node is closer than current
-        if curr_dist > prev_dist + 30 and next_dist < curr_dist:
-            print(f"🔧 Smoothed out backtrack node at {coords[i]['lat']:.5f}, {coords[i]['lng']:.5f}")
-            continue
-        smoothed.append(coords[i])
-    smoothed.append(coords[-1])
-    return smoothed
 def analyze_route(route):
     total_gain = 0
     total_length = 0
     grades = []
+    coords = []
+
     for i in range(len(route) - 1):
         u, v = route[i], route[i+1]
         edge_data = G.get_edge_data(u, v)
@@ -91,26 +87,16 @@ def analyze_route(route):
         if length > 0:
             grades.append(grade_abs)
 
+        # Get full street geometry for this edge (exclude last point to avoid duplication)
+        edge_coords = get_edge_coords(u, v)
+        coords.extend(edge_coords[:-1])
+
+    # Add the final destination node
+    coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
+
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
-    raw_coords = []
-    for i in range(len(route) - 1):
-        u, v = route[i], route[i+1]
-        edge_data = G.get_edge_data(u, v)
-        edge = edge_data[0] if edge_data else {}
-        geom = edge.get("geometry")
-        if geom is not None:
-            pts = list(geom.coords)
-            # Check if edge geometry goes u→v or v→u
-            u_lat, u_lng = G.nodes[u]["y"], G.nodes[u]["x"]
-            if abs(pts[0][0] - u_lng) > abs(pts[-1][0] - u_lng):
-                pts = pts[::-1]
-            for lng, lat in pts[:-1]:
-                raw_coords.append({"lat": lat, "lng": lng})
-        else:
-            raw_coords.append({"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]})
-    raw_coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
-    coords = raw_coords
+
     return {
         "coordinates": coords,
         "distanceInMiles": round(total_length / 1609.34, 2),
@@ -120,12 +106,8 @@ def analyze_route(route):
         "_difficulty": avg_grade * 0.7 + max_grade * 0.3
     }
 
+
 def has_backtrack(route, destination, threshold=1.0):
-    """
-    Returns True if the route backtracks significantly.
-    At any point, if distance to destination increases by more than
-    threshold * total_direct_distance, it's backtracking.
-    """
     dest_lat = G.nodes[destination]["y"]
     dest_lng = G.nodes[destination]["x"]
     start_lat = G.nodes[route[0]]["y"]
@@ -150,6 +132,7 @@ def has_backtrack(route, destination, threshold=1.0):
         prev_dist = dist
     return False
 
+
 def get_route_via_waypoint(origin, destination, waypoint_node, weight):
     try:
         if waypoint_node in (origin, destination):
@@ -162,11 +145,8 @@ def get_route_via_waypoint(origin, destination, waypoint_node, weight):
         pass
     return None
 
+
 def get_local_waypoint_nodes(origin, destination):
-    """
-    Generate waypoint candidates in a cross pattern at multiple radii.
-    Wider offsets find flat detour corridors (like Octavia Blvd).
-    """
     slat = G.nodes[origin]["y"]
     slng = G.nodes[origin]["x"]
     elat = G.nodes[destination]["y"]
@@ -181,7 +161,6 @@ def get_local_waypoint_nodes(origin, destination):
     mid_lng = (slng + elng) / 2
 
     candidate_coords = []
-    # Try 3 radii: 30%, 60%, 100% of direct distance
     for factor in [0.3, 0.6, 1.0]:
         offset = max(direct_dist_m * factor, 200) / 111000
         candidate_coords += [
@@ -204,7 +183,6 @@ def get_local_waypoint_nodes(origin, destination):
         except:
             pass
 
-    # Sample flat nodes from the graph within an expanded bounding box
     padding = (direct_dist_m * 1.5) / 111000
     min_lat = min(slat, elat) - padding
     max_lat = max(slat, elat) + padding
@@ -221,7 +199,6 @@ def get_local_waypoint_nodes(origin, destination):
             continue
         if node_id in (origin, destination):
             continue
-        # Score this node by average grade of its edges
         edge_grades = [
             float(d.get("grade_abs") or 0)
             for _, _, d in G.edges(node_id, data=True)
@@ -231,7 +208,6 @@ def get_local_waypoint_nodes(origin, destination):
         avg_node_grade = sum(edge_grades) / len(edge_grades)
         flat_candidates.append((avg_node_grade, node_id))
 
-    # Take the 20 flattest nodes as additional waypoint candidates
     flat_candidates.sort(key=lambda x: x[0])
     for _, node_id in flat_candidates[:20]:
         if node_id not in nodes:
@@ -239,18 +215,8 @@ def get_local_waypoint_nodes(origin, destination):
 
     return nodes
 
-def has_loop(route):
-    """Detect routes that visit the same node twice — waypoint artifacts."""
-    seen = set()
-    for coord in route["coordinates"]:
-        key = (round(coord["lat"], 5), round(coord["lng"], 5))
-        if key in seen:
-            return True
-        seen.add(key)
-    return False
 
 def deduplicate_routes(routes):
-    routes = [r for r in routes if not has_loop(r)]
     unique = []
     for r in routes:
         coords = r["coordinates"]
@@ -258,12 +224,10 @@ def deduplicate_routes(routes):
             continue
         is_dup = False
         for u in unique:
-            # Must match on distance AND grade AND midpoint to be a duplicate
+            u_coords = u["coordinates"]
             same_dist = abs(r["distanceInMiles"] - u["distanceInMiles"]) < 0.1
             same_grade = abs(r["avgGradePct"] - u["avgGradePct"]) < 0.3
             if same_dist and same_grade:
-                # Also verify midpoint proximity before confirming duplicate
-                u_coords = u["coordinates"]
                 mid = len(coords) // 2
                 u_mid = len(u_coords) // 2
                 if mid < len(coords) and u_mid < len(u_coords):
@@ -273,7 +237,6 @@ def deduplicate_routes(routes):
                     if dist_m < 100:
                         is_dup = True
                         break
-            # Also check midpoint proximity
             u_coords = u["coordinates"]
             mid = len(coords) // 2
             u_mid = len(u_coords) // 2
@@ -288,16 +251,17 @@ def deduplicate_routes(routes):
             unique.append(r)
     return unique
 
+
 @app.route("/health", methods=["GET"])
 def health():
-    # Sample 5 edges to check grade data
     sample = []
     for u, v, data in list(G.edges(data=True))[:5]:
         sample.append({
             "grade_abs": data.get("grade_abs"),
             "impedance_high": data.get("impedance_high")
         })
-    return {"status": "ok", "version": "v5-consolidated-graph", "sample_edges": sample}
+    return {"status": "ok", "version": "v6-edge-geometry", "sample_edges": sample}
+
 
 @app.route("/route", methods=["GET"])
 def get_route():
@@ -322,8 +286,7 @@ def get_route():
             if r:
                 all_routes.append(analyze_route(r))
 
-        # Segmented flat routes — divide trip into 3 segments for geographic coherence
-        # Pick intermediate nodes along the direct line at 33% and 66% progress
+        # Segmented flat routes
         origin_lat = G.nodes[origin]["y"]
         origin_lng = G.nodes[origin]["x"]
         dest_lat = G.nodes[destination]["y"]
@@ -343,7 +306,6 @@ def get_route():
                     if len(waypoints) < 2:
                         continue
 
-                    # Route through each segment
                     full_route = []
                     nodes_seq = [origin] + waypoints + [destination]
                     valid = True
@@ -365,6 +327,7 @@ def get_route():
         print(f"📊 Before dedup: {len(all_routes)} routes")
         for r in all_routes:
             print(f"   {r['distanceInMiles']}mi avg={r['avgGradePct']}% max={r['maxGradePct']}%")
+
         unique_routes = deduplicate_routes(all_routes)
         print(f"📊 After dedup: {len(unique_routes)} routes")
         unique_routes.sort(key=lambda r: r["_difficulty"])
@@ -377,7 +340,6 @@ def get_route():
         filtered = [r for r in unique_routes
                     if r["distanceInMiles"] <= max_allowed
                     and r["maxGradePct"] <= 20.0]
-        # Fall back if filters are too aggressive
         if not filtered:
             filtered = unique_routes
 
@@ -399,5 +361,7 @@ def get_route():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
+
