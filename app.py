@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 GRAPHML_PATH = "sf_walk_network_elevation_v3.graphml"
-GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/v3/sf_walk_network_elevation_v3.graphml.gz"
+GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/V.3/sf_walk_network_elevation_v3.graphml.gz"
 
 if not os.path.exists(GRAPHML_PATH):
     print("Graph file not found. Downloading...")
