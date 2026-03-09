@@ -110,7 +110,7 @@ def analyze_route(route):
         else:
             raw_coords.append({"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]})
     raw_coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
-    coords = smooth_coords(raw_coords)
+    coords = raw_coords
     return {
         "coordinates": coords,
         "distanceInMiles": round(total_length / 1609.34, 2),
