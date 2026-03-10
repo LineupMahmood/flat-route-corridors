@@ -48,20 +48,19 @@ print("Network ready. Server starting...")
 
 
 def get_edge_coords(u, v):
-    """
-    Returns the full list of (lat, lng) dicts for the edge between u and v,
-    using the edge geometry if available, otherwise just the node coords.
-    Handles direction automatically.
-    """
     edge_data = G.get_edge_data(u, v)
     edge = edge_data[0] if edge_data else {}
     geom = edge.get("geometry")
 
     if geom is not None:
-        pts = list(geom.coords)  # each pt is (lng, lat)
-        # Determine correct direction: compare first pt to u's position
+        pts = list(geom.coords)  # (lng, lat) tuples
         u_lng = G.nodes[u]["x"]
-        if len(pts) >= 2 and abs(pts[0][0] - u_lng) > abs(pts[-1][0] - u_lng):
+        u_lat = G.nodes[u]["y"]
+        
+        def dist_to_u(pt):
+            return (pt[0] - u_lng)**2 + (pt[1] - u_lat)**2
+        
+        if len(pts) >= 2 and dist_to_u(pts[0]) > dist_to_u(pts[-1]):
             pts = pts[::-1]
         return [{"lat": lat, "lng": lng} for lng, lat in pts]
     else:
