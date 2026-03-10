@@ -115,8 +115,8 @@ def extract_route_coords(route):
             coords.append({"lat": lat, "lng": lng})
         else:
             coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
-
-    return coords
+return remove_reversals(coords)
+   
 
 
 def analyze_route(route):
@@ -298,3 +298,29 @@ def get_route():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
+
+
+def remove_reversals(coords, threshold_m=20):
+    def dist(a, b):
+        dlat = (a["lat"] - b["lat"]) * 111000
+        dlng = (a["lng"] - b["lng"]) * 111000 * math.cos(math.radians(a["lat"]))
+        return math.sqrt(dlat**2 + dlng**2)
+
+    changed = True
+    while changed:
+        changed = False
+        result = [coords[0]]
+        i = 1
+        while i < len(coords) - 1:
+            prev = result[-1]
+            curr = coords[i]
+            nxt  = coords[i+1]
+            if dist(prev, curr) < threshold_m and dist(curr, nxt) < threshold_m and dist(prev, nxt) < dist(prev, curr):
+                changed = True
+                i += 1
+            else:
+                result.append(curr)
+                i += 1
+        result.append(coords[-1])
+        coords = result
+    return coords
