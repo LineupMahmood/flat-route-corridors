@@ -5,6 +5,7 @@ import urllib.request
 import osmnx as ox
 import networkx as nx
 from flask import Flask, request, jsonify
+from shapely.geometry import LineString
 
 app = Flask(__name__)
 
@@ -47,53 +48,85 @@ else:
 print("Network ready. Server starting...")
 
 
-def get_edge_coords(u, v):
+def haversine_dist(a, b):
+    """Distance in meters between two (lat, lng) tuples."""
+    dlat = (a[0] - b[0]) * 111000
+    dlng = (a[1] - b[1]) * 111000 * math.cos(math.radians(a[0]))
+    return math.sqrt(dlat ** 2 + dlng ** 2)
+
+
+def extract_route_coords(route):
     """
-    Returns the full list of (lat, lng) dicts for the edge between u and v,
-    using the edge geometry if available, otherwise just the node coords.
+    Build a clean polyline from edge geometries ONLY.
+    Never insert node coordinates — nodes are for routing topology only.
+    After consolidate_intersections, node centroids do NOT sit on edge
+    geometry endpoints, so inserting them creates ping-pong artifacts.
+
+    Algorithm (per edge u→v):
+    1. Get edge geometry (LineString of original OSM way shape)
+    2. If no geometry, synthesize a straight line between nodes
+    3. Orient geometry so it runs u→v (not v→u)
+    4. Append all points except the last (to avoid duplication at junctions)
+    5. After all edges, append the final destination point
     """
-    edge_data = G.get_edge_data(u, v)
-    edge = edge_data[0] if edge_data else {}
-    geom = edge.get("geometry")
+    coords = []
 
-    if geom is not None:
-        pts = list(geom.coords)  # each pt is (lng, lat)
-        u_lng = G.nodes[u]["x"]
-        u_lat = G.nodes[u]["y"]
+    for i in range(len(route) - 1):
+        u, v = route[i], route[i + 1]
 
-        def dist_to_u(pt):
-            return (pt[0] - u_lng) ** 2 + (pt[1] - u_lat) ** 2
+        edge_data = G.get_edge_data(u, v)
+        edge = min(edge_data.values(), key=lambda d: d.get("length", 0)) if edge_data else {}
+        geom = edge.get("geometry")
 
-        if len(pts) >= 2 and dist_to_u(pts[0]) > dist_to_u(pts[-1]):
+        if geom is not None:
+            pts = list(geom.coords)  # (lng, lat) tuples
+        else:
+            # Synthesize straight line — no node coord insertion
+            pts = [
+                (G.nodes[u]["x"], G.nodes[u]["y"]),
+                (G.nodes[v]["x"], G.nodes[v]["y"])
+            ]
+
+        # Orient geometry: first point should be closer to node u
+        u_pos = (G.nodes[u]["y"], G.nodes[u]["x"])
+        start_pos = (pts[0][1], pts[0][0])
+        end_pos = (pts[-1][1], pts[-1][0])
+
+        if haversine_dist(u_pos, start_pos) > haversine_dist(u_pos, end_pos):
             pts = pts[::-1]
-        return [{"lat": lat, "lng": lng} for lng, lat in pts]
-    else:
-        return [{"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]}]
 
+        # Append all points except the last to avoid junction duplication
+        for lng, lat in pts[:-1]:
+            coords.append({"lat": lat, "lng": lng})
 
-def remove_duplicate_coords(coords, threshold_m=4):
-    """
-    Remove consecutive points within threshold_m meters of each other.
-    Fixes ping-pong artifacts from consolidated graph node centroids
-    not sitting exactly on edge geometry endpoints.
-    """
-    if len(coords) < 2:
-        return coords
-    result = [coords[0]]
-    for c in coords[1:]:
-        prev = result[-1]
-        dlat = (c["lat"] - prev["lat"]) * 111000
-        dlng = (c["lng"] - prev["lng"]) * 111000 * math.cos(math.radians(c["lat"]))
-        if math.sqrt(dlat ** 2 + dlng ** 2) > threshold_m:
-            result.append(c)
-    return result
+    # Append the true final destination point from geometry (not node centroid)
+    # Use the last point of the last edge geometry
+    if len(route) >= 2:
+        u, v = route[-2], route[-1]
+        edge_data = G.get_edge_data(u, v)
+        edge = min(edge_data.values(), key=lambda d: d.get("length", 0)) if edge_data else {}
+        geom = edge.get("geometry")
+        if geom is not None:
+            pts = list(geom.coords)
+            u_pos = (G.nodes[u]["y"], G.nodes[u]["x"])
+            if haversine_dist(u_pos, (pts[0][1], pts[0][0])) > haversine_dist(u_pos, (pts[-1][1], pts[-1][0])):
+                pts = pts[::-1]
+            lng, lat = pts[-1]
+            coords.append({"lat": lat, "lng": lng})
+        else:
+            coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
+
+    return coords
 
 
 def analyze_route(route):
+    """
+    Compute route stats and extract clean polyline coordinates.
+    Stats use node elevation data. Polyline uses edge geometry only.
+    """
     total_gain = 0
     total_length = 0
     grades = []
-    raw_coords = []
 
     for i in range(len(route) - 1):
         u, v = route[i], route[i + 1]
@@ -108,14 +141,7 @@ def analyze_route(route):
         if length > 0:
             grades.append(grade_abs)
 
-        edge_coords = get_edge_coords(u, v)
-        raw_coords.extend(edge_coords[:-1])
-
-    # Add the final destination node
-    raw_coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
-
-    # Remove ping-pong artifacts
-    coords = remove_duplicate_coords(raw_coords)
+    coords = extract_route_coords(route)
 
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
@@ -130,115 +156,6 @@ def analyze_route(route):
     }
 
 
-def has_backtrack(route, destination, threshold=1.0):
-    dest_lat = G.nodes[destination]["y"]
-    dest_lng = G.nodes[destination]["x"]
-    start_lat = G.nodes[route[0]]["y"]
-    start_lng = G.nodes[route[0]]["x"]
-
-    direct_dist = math.sqrt(
-        ((dest_lat - start_lat) * 111000) ** 2 +
-        ((dest_lng - start_lng) * 111000 * math.cos(math.radians(start_lat))) ** 2
-    )
-    max_allowed_increase = direct_dist * threshold
-
-    prev_dist = direct_dist
-    for node in route[1:]:
-        nlat = G.nodes[node]["y"]
-        nlng = G.nodes[node]["x"]
-        dist = math.sqrt(
-            ((dest_lat - nlat) * 111000) ** 2 +
-            ((dest_lng - nlng) * 111000 * math.cos(math.radians(nlat))) ** 2
-        )
-        if dist > prev_dist + max_allowed_increase:
-            return True
-        prev_dist = dist
-    return False
-
-
-def get_route_via_waypoint(origin, destination, waypoint_node, weight):
-    try:
-        if waypoint_node in (origin, destination):
-            return None
-        leg1 = ox.routing.shortest_path(G, origin, waypoint_node, weight=weight)
-        leg2 = ox.routing.shortest_path(G, waypoint_node, destination, weight=weight)
-        if leg1 and leg2:
-            return leg1 + leg2[1:]
-    except:
-        pass
-    return None
-
-
-def get_local_waypoint_nodes(origin, destination):
-    slat = G.nodes[origin]["y"]
-    slng = G.nodes[origin]["x"]
-    elat = G.nodes[destination]["y"]
-    elng = G.nodes[destination]["x"]
-
-    direct_dist_m = math.sqrt(
-        ((elat - slat) * 111000) ** 2 +
-        ((elng - slng) * 111000 * math.cos(math.radians(slat))) ** 2
-    )
-
-    mid_lat = (slat + elat) / 2
-    mid_lng = (slng + elng) / 2
-
-    candidate_coords = []
-    for factor in [0.3, 0.6, 1.0]:
-        offset = max(direct_dist_m * factor, 200) / 111000
-        candidate_coords += [
-            (mid_lat + offset, mid_lng),
-            (mid_lat - offset, mid_lng),
-            (mid_lat, mid_lng + offset),
-            (mid_lat, mid_lng - offset),
-            (slat + offset, slng),
-            (slat, slng + offset),
-            (elat + offset, elng),
-            (elat, elng + offset),
-        ]
-
-    nodes = []
-    for lat, lng in candidate_coords:
-        try:
-            n = ox.distance.nearest_nodes(G, lng, lat)
-            if n not in (origin, destination) and n not in nodes:
-                nodes.append(n)
-        except:
-            pass
-
-    padding = (direct_dist_m * 1.5) / 111000
-    min_lat = min(slat, elat) - padding
-    max_lat = max(slat, elat) + padding
-    min_lng = min(slng, elng) - padding
-    max_lng = max(slng, elng) + padding
-
-    flat_candidates = []
-    for node_id, data in G.nodes(data=True):
-        nlat = data.get("y")
-        nlng = data.get("x")
-        if nlat is None or nlng is None:
-            continue
-        if not (min_lat <= nlat <= max_lat and min_lng <= nlng <= max_lng):
-            continue
-        if node_id in (origin, destination):
-            continue
-        edge_grades = [
-            float(d.get("grade_abs") or 0)
-            for _, _, d in G.edges(node_id, data=True)
-        ]
-        if not edge_grades:
-            continue
-        avg_node_grade = sum(edge_grades) / len(edge_grades)
-        flat_candidates.append((avg_node_grade, node_id))
-
-    flat_candidates.sort(key=lambda x: x[0])
-    for _, node_id in flat_candidates[:20]:
-        if node_id not in nodes:
-            nodes.append(node_id)
-
-    return nodes
-
-
 def deduplicate_routes(routes):
     unique = []
     for r in routes:
@@ -250,24 +167,18 @@ def deduplicate_routes(routes):
             u_coords = u["coordinates"]
             same_dist = abs(r["distanceInMiles"] - u["distanceInMiles"]) < 0.1
             same_grade = abs(r["avgGradePct"] - u["avgGradePct"]) < 0.3
-            if same_dist and same_grade:
-                mid = len(coords) // 2
-                u_mid = len(u_coords) // 2
-                if mid < len(coords) and u_mid < len(u_coords):
-                    dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
-                    dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                    dist_m = math.sqrt(dlat ** 2 + dlng ** 2) * 111000
-                    if dist_m < 100:
-                        is_dup = True
-                        break
-            u_coords = u["coordinates"]
             mid = len(coords) // 2
             u_mid = len(u_coords) // 2
+            if same_dist and same_grade and mid < len(coords) and u_mid < len(u_coords):
+                dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
+                dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
+                if math.sqrt(dlat ** 2 + dlng ** 2) * 111000 < 100:
+                    is_dup = True
+                    break
             if mid < len(coords) and u_mid < len(u_coords):
                 dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
                 dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                dist_m = math.sqrt(dlat ** 2 + dlng ** 2) * 111000
-                if dist_m < 40:
+                if math.sqrt(dlat ** 2 + dlng ** 2) * 111000 < 40:
                     is_dup = True
                     break
         if not is_dup:
@@ -283,7 +194,7 @@ def health():
             "grade_abs": data.get("grade_abs"),
             "impedance_high": data.get("impedance_high")
         })
-    return {"status": "ok", "version": "v7-dedup-coords", "sample_edges": sample}
+    return {"status": "ok", "version": "v8-geometry-only", "sample_edges": sample}
 
 
 @app.route("/route", methods=["GET"])
