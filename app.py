@@ -48,18 +48,22 @@ print("Network ready. Server starting...")
 
 
 def get_edge_coords(u, v):
+    """
+    Returns the full list of (lat, lng) dicts for the edge between u and v,
+    using the edge geometry if available, otherwise just the node coords.
+    """
     edge_data = G.get_edge_data(u, v)
     edge = edge_data[0] if edge_data else {}
     geom = edge.get("geometry")
 
     if geom is not None:
-        pts = list(geom.coords)  # (lng, lat) tuples
+        pts = list(geom.coords)  # each pt is (lng, lat)
         u_lng = G.nodes[u]["x"]
         u_lat = G.nodes[u]["y"]
-        
+
         def dist_to_u(pt):
-            return (pt[0] - u_lng)**2 + (pt[1] - u_lat)**2
-        
+            return (pt[0] - u_lng) ** 2 + (pt[1] - u_lat) ** 2
+
         if len(pts) >= 2 and dist_to_u(pts[0]) > dist_to_u(pts[-1]):
             pts = pts[::-1]
         return [{"lat": lat, "lng": lng} for lng, lat in pts]
@@ -67,14 +71,32 @@ def get_edge_coords(u, v):
         return [{"lat": G.nodes[u]["y"], "lng": G.nodes[u]["x"]}]
 
 
+def remove_duplicate_coords(coords, threshold_m=4):
+    """
+    Remove consecutive points within threshold_m meters of each other.
+    Fixes ping-pong artifacts from consolidated graph node centroids
+    not sitting exactly on edge geometry endpoints.
+    """
+    if len(coords) < 2:
+        return coords
+    result = [coords[0]]
+    for c in coords[1:]:
+        prev = result[-1]
+        dlat = (c["lat"] - prev["lat"]) * 111000
+        dlng = (c["lng"] - prev["lng"]) * 111000 * math.cos(math.radians(c["lat"]))
+        if math.sqrt(dlat ** 2 + dlng ** 2) > threshold_m:
+            result.append(c)
+    return result
+
+
 def analyze_route(route):
     total_gain = 0
     total_length = 0
     grades = []
-    coords = []
+    raw_coords = []
 
     for i in range(len(route) - 1):
-        u, v = route[i], route[i+1]
+        u, v = route[i], route[i + 1]
         edge_data = G.get_edge_data(u, v)
         edge = edge_data[0] if edge_data else {}
         length = float(edge.get("length") or 0)
@@ -86,12 +108,14 @@ def analyze_route(route):
         if length > 0:
             grades.append(grade_abs)
 
-        # Get full street geometry for this edge (exclude last point to avoid duplication)
         edge_coords = get_edge_coords(u, v)
-        coords.extend(edge_coords[:-1])
+        raw_coords.extend(edge_coords[:-1])
 
     # Add the final destination node
-    coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
+    raw_coords.append({"lat": G.nodes[route[-1]]["y"], "lng": G.nodes[route[-1]]["x"]})
+
+    # Remove ping-pong artifacts
+    coords = remove_duplicate_coords(raw_coords)
 
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
@@ -232,7 +256,7 @@ def deduplicate_routes(routes):
                 if mid < len(coords) and u_mid < len(u_coords):
                     dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
                     dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                    dist_m = math.sqrt(dlat**2 + dlng**2) * 111000
+                    dist_m = math.sqrt(dlat ** 2 + dlng ** 2) * 111000
                     if dist_m < 100:
                         is_dup = True
                         break
@@ -242,7 +266,7 @@ def deduplicate_routes(routes):
             if mid < len(coords) and u_mid < len(u_coords):
                 dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
                 dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                dist_m = math.sqrt(dlat**2 + dlng**2) * 111000
+                dist_m = math.sqrt(dlat ** 2 + dlng ** 2) * 111000
                 if dist_m < 40:
                     is_dup = True
                     break
@@ -259,7 +283,7 @@ def health():
             "grade_abs": data.get("grade_abs"),
             "impedance_high": data.get("impedance_high")
         })
-    return {"status": "ok", "version": "v6-edge-geometry", "sample_edges": sample}
+    return {"status": "ok", "version": "v7-dedup-coords", "sample_edges": sample}
 
 
 @app.route("/route", methods=["GET"])
@@ -309,7 +333,7 @@ def get_route():
                     nodes_seq = [origin] + waypoints + [destination]
                     valid = True
                     for i in range(len(nodes_seq) - 1):
-                        seg = ox.routing.shortest_path(G, nodes_seq[i], nodes_seq[i+1], weight=weight)
+                        seg = ox.routing.shortest_path(G, nodes_seq[i], nodes_seq[i + 1], weight=weight)
                         if not seg:
                             valid = False
                             break
@@ -363,4 +387,3 @@ def get_route():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
-
