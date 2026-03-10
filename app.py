@@ -27,7 +27,7 @@ import pickle
 
 # v5 — new smooth impedance weights (no hard cutoff)
 # Changing this forces Railway to rebuild the pickle with new weights
-PICKLE_PATH = "sf_walk_network_v5.pkl"
+PICKLE_PATH = "sf_walk_network_v6.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
@@ -47,11 +47,11 @@ else:
         # 10% grade → 1.30x multiplier  (was 999999x before)
         # 20% grade → 2.20x multiplier  (steep but not impassable)
         # This stops the router forcing absurd detours to avoid moderate hills.
-        data["impedance_high"] = length * (1 + 30 * grade ** 2)
+        data["impedance_high"] = length * (1 + 200 * grade ** 2)
 
         # Stricter variant — used for finding the flattest option.
         # 10% grade → 1.80x, 20% grade → 4.20x
-        data["impedance_max"] = length * (1 + 80 * grade ** 2)
+        data["impedance_max"] = length * (1 + 500 * grade ** 2)
 
     print("Saving pickle cache for fast future loads...")
     with open(PICKLE_PATH, "wb") as f:
