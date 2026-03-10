@@ -323,4 +323,9 @@ def remove_reversals(coords, threshold_m=20):
                 i += 1
         result.append(coords[-1])
         coords = result
-    return coords
+    # Remove exact duplicate consecutive points
+    deduped = [coords[0]]
+    for pt in coords[1:]:
+        if pt["lat"] != deduped[-1]["lat"] or pt["lng"] != deduped[-1]["lng"]:
+            deduped.append(pt)
+    return deduped
