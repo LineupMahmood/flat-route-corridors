@@ -115,7 +115,7 @@ def extract_route_coords(route):
             coords.append({"lat": lat, "lng": lng})
         else:
             coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
-return remove_reversals(coords)
+    return remove_reversals(coords)
    
 
 
