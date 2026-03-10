@@ -312,7 +312,7 @@ def get_route():
         # CHANGE: 2x straight-line distance cap.
         # Prevents the router picking an absurd detour just to avoid a moderate hill.
         # Floor of 0.5mi so very short trips still get reasonable options.
-        max_allowed_miles = max(crow_flies_miles * 2.0, 0.5)
+        max_allowed_miles = max(crow_flies_miles * 4.0, 0.5)
         filtered = [r for r in unique_routes
                     if r["distanceInMiles"] <= max_allowed_miles
                     and r["maxGradePct"] <= 20.0]
