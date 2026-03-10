@@ -25,7 +25,9 @@ if not os.path.exists(GRAPHML_PATH):
 
 import pickle
 
-PICKLE_PATH = "sf_walk_network_v4.pkl"
+# v5 — new smooth impedance weights (no hard cutoff)
+# Changing this forces Railway to rebuild the pickle with new weights
+PICKLE_PATH = "sf_walk_network_v5.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
@@ -39,14 +41,26 @@ else:
     for u, v, k, data in G.edges(keys=True, data=True):
         grade = float(data.get("grade_abs", 0))
         length = float(data.get("length", 0))
-        data["impedance_high"] = length * (999999 if grade > 0.10 else (1 + 5000 * grade ** 2))
-        data["impedance_max"]  = length * (999999 if grade > 0.07 else (1 + 15000 * grade ** 2))
+
+        # CHANGE: smooth quadratic curve, no hard cutoff.
+        # 5% grade  → 1.075x multiplier (barely penalized)
+        # 10% grade → 1.30x multiplier  (was 999999x before)
+        # 20% grade → 2.20x multiplier  (steep but not impassable)
+        # This stops the router forcing absurd detours to avoid moderate hills.
+        data["impedance_high"] = length * (1 + 30 * grade ** 2)
+
+        # Stricter variant — used for finding the flattest option.
+        # 10% grade → 1.80x, 20% grade → 4.20x
+        data["impedance_max"] = length * (1 + 80 * grade ** 2)
+
     print("Saving pickle cache for fast future loads...")
     with open(PICKLE_PATH, "wb") as f:
         pickle.dump(G, f)
 
 print("Network ready. Server starting...")
 
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
 
 def haversine_dist(a, b):
     """Distance in meters between two (lat, lng) tuples."""
@@ -55,52 +69,78 @@ def haversine_dist(a, b):
     return math.sqrt(dlat ** 2 + dlng ** 2)
 
 
+def straight_line_dist_miles(lat1, lng1, lat2, lng2):
+    return haversine_dist((lat1, lng1), (lat2, lng2)) / 1609.34
+
+
+def remove_reversals(coords, threshold_m=20):
+    """
+    Remove A→B→A ping-pong artifacts at edge junctions.
+    Also deduplicates exact consecutive duplicates.
+    """
+    def dist(a, b):
+        dlat = (a["lat"] - b["lat"]) * 111000
+        dlng = (a["lng"] - b["lng"]) * 111000 * math.cos(math.radians(a["lat"]))
+        return math.sqrt(dlat ** 2 + dlng ** 2)
+
+    changed = True
+    while changed:
+        changed = False
+        result = [coords[0]]
+        i = 1
+        while i < len(coords) - 1:
+            prev = result[-1]
+            curr = coords[i]
+            nxt = coords[i + 1]
+            if (dist(prev, curr) < threshold_m
+                    and dist(curr, nxt) < threshold_m
+                    and dist(prev, nxt) < dist(prev, curr)):
+                changed = True
+                i += 1
+            else:
+                result.append(curr)
+                i += 1
+        result.append(coords[-1])
+        coords = result
+
+    deduped = [coords[0]]
+    for pt in coords[1:]:
+        if pt["lat"] != deduped[-1]["lat"] or pt["lng"] != deduped[-1]["lng"]:
+            deduped.append(pt)
+    return deduped
+
+
+# ── Route geometry ────────────────────────────────────────────────────────────
+
 def extract_route_coords(route):
     """
-    Build a clean polyline from edge geometries ONLY.
-    Never insert node coordinates — nodes are for routing topology only.
-    After consolidate_intersections, node centroids do NOT sit on edge
-    geometry endpoints, so inserting them creates ping-pong artifacts.
-
-    Algorithm (per edge u→v):
-    1. Get edge geometry (LineString of original OSM way shape)
-    2. If no geometry, synthesize a straight line between nodes
-    3. Orient geometry so it runs u→v (not v→u)
-    4. Append all points except the last (to avoid duplication at junctions)
-    5. After all edges, append the final destination point
+    Build polyline from edge geometries ONLY — never insert node coordinates.
+    After consolidate_intersections, node centroids don't sit on edge geometry
+    endpoints, so inserting them creates ping-pong artifacts.
     """
     coords = []
 
     for i in range(len(route) - 1):
         u, v = route[i], route[i + 1]
-
         edge_data = G.get_edge_data(u, v)
         edge = min(edge_data.values(), key=lambda d: d.get("length", 0)) if edge_data else {}
         geom = edge.get("geometry")
 
         if geom is not None:
-            pts = list(geom.coords)  # (lng, lat) tuples
+            pts = list(geom.coords)
         else:
-            # Synthesize straight line — no node coord insertion
             pts = [
                 (G.nodes[u]["x"], G.nodes[u]["y"]),
                 (G.nodes[v]["x"], G.nodes[v]["y"])
             ]
 
-        # Orient geometry: first point should be closer to node u
         u_pos = (G.nodes[u]["y"], G.nodes[u]["x"])
-        start_pos = (pts[0][1], pts[0][0])
-        end_pos = (pts[-1][1], pts[-1][0])
-
-        if haversine_dist(u_pos, start_pos) > haversine_dist(u_pos, end_pos):
+        if haversine_dist(u_pos, (pts[0][1], pts[0][0])) > haversine_dist(u_pos, (pts[-1][1], pts[-1][0])):
             pts = pts[::-1]
 
-        # Append all points except the last to avoid junction duplication
         for lng, lat in pts[:-1]:
             coords.append({"lat": lat, "lng": lng})
 
-    # Append the true final destination point from geometry (not node centroid)
-    # Use the last point of the last edge geometry
     if len(route) >= 2:
         u, v = route[-2], route[-1]
         edge_data = G.get_edge_data(u, v)
@@ -115,15 +155,13 @@ def extract_route_coords(route):
             coords.append({"lat": lat, "lng": lng})
         else:
             coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
-    return remove_reversals(coords)
-   
 
+    return remove_reversals(coords)
+
+
+# ── Route analysis ────────────────────────────────────────────────────────────
 
 def analyze_route(route):
-    """
-    Compute route stats and extract clean polyline coordinates.
-    Stats use node elevation data. Polyline uses edge geometry only.
-    """
     total_gain = 0
     total_length = 0
     grades = []
@@ -142,7 +180,6 @@ def analyze_route(route):
             grades.append(grade_abs)
 
     coords = extract_route_coords(route)
-
     max_grade = max(grades) if grades else 0
     avg_grade = sum(grades) / len(grades) if grades else 0
 
@@ -165,10 +202,10 @@ def deduplicate_routes(routes):
         is_dup = False
         for u in unique:
             u_coords = u["coordinates"]
-            same_dist = abs(r["distanceInMiles"] - u["distanceInMiles"]) < 0.1
-            same_grade = abs(r["avgGradePct"] - u["avgGradePct"]) < 0.3
             mid = len(coords) // 2
             u_mid = len(u_coords) // 2
+            same_dist = abs(r["distanceInMiles"] - u["distanceInMiles"]) < 0.1
+            same_grade = abs(r["avgGradePct"] - u["avgGradePct"]) < 0.3
             if same_dist and same_grade and mid < len(coords) and u_mid < len(u_coords):
                 dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
                 dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
@@ -186,6 +223,8 @@ def deduplicate_routes(routes):
     return unique
 
 
+# ── Flask routes ──────────────────────────────────────────────────────────────
+
 @app.route("/health", methods=["GET"])
 def health():
     sample = []
@@ -194,7 +233,7 @@ def health():
             "grade_abs": data.get("grade_abs"),
             "impedance_high": data.get("impedance_high")
         })
-    return {"status": "ok", "version": "v8-geometry-only", "sample_edges": sample}
+    return {"status": "ok", "version": "v9-smooth-impedance", "sample_edges": sample}
 
 
 @app.route("/route", methods=["GET"])
@@ -212,15 +251,16 @@ def get_route():
         origin = ox.distance.nearest_nodes(G, start_lng, start_lat)
         destination = ox.distance.nearest_nodes(G, end_lng, end_lat)
 
+        # Straight-line distance — used for the 2x distance cap below
+        crow_flies_miles = straight_line_dist_miles(start_lat, start_lng, end_lat, end_lng)
+
         all_routes = []
 
-        # Base routes — direct A to B
         for weight in ["impedance_high", "impedance_max", "length"]:
             r = ox.routing.shortest_path(G, origin, destination, weight=weight)
             if r:
                 all_routes.append(analyze_route(r))
 
-        # Segmented flat routes
         origin_lat = G.nodes[origin]["y"]
         origin_lng = G.nodes[origin]["x"]
         dest_lat = G.nodes[destination]["y"]
@@ -269,12 +309,16 @@ def get_route():
         if not unique_routes:
             return jsonify({"error": "No routes found"}), 500
 
-        min_dist = min(r["distanceInMiles"] for r in unique_routes)
-        max_allowed = max(min_dist * 4.0, 1.5)
+        # CHANGE: 2x straight-line distance cap.
+        # Prevents the router picking an absurd detour just to avoid a moderate hill.
+        # Floor of 0.5mi so very short trips still get reasonable options.
+        max_allowed_miles = max(crow_flies_miles * 2.0, 0.5)
         filtered = [r for r in unique_routes
-                    if r["distanceInMiles"] <= max_allowed
+                    if r["distanceInMiles"] <= max_allowed_miles
                     and r["maxGradePct"] <= 20.0]
+
         if not filtered:
+            print("⚠️ Distance cap filtered all routes, falling back to uncapped")
             filtered = unique_routes
 
         for r in filtered:
@@ -283,7 +327,9 @@ def get_route():
         flat = filtered[0]
         short = min(filtered, key=lambda r: r["distanceInMiles"])
 
+        print(f"✅ crow_flies={crow_flies_miles:.2f}mi cap={max_allowed_miles:.2f}mi")
         print(f"✅ Returning {len(filtered)} routes, easiest: avg={filtered[0]['avgGradePct']}%, max={filtered[0]['maxGradePct']}%")
+
         return jsonify({
             "flatRoute": flat,
             "shortRoute": short,
@@ -299,33 +345,3 @@ def get_route():
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
 
-
-def remove_reversals(coords, threshold_m=20):
-    def dist(a, b):
-        dlat = (a["lat"] - b["lat"]) * 111000
-        dlng = (a["lng"] - b["lng"]) * 111000 * math.cos(math.radians(a["lat"]))
-        return math.sqrt(dlat**2 + dlng**2)
-
-    changed = True
-    while changed:
-        changed = False
-        result = [coords[0]]
-        i = 1
-        while i < len(coords) - 1:
-            prev = result[-1]
-            curr = coords[i]
-            nxt  = coords[i+1]
-            if dist(prev, curr) < threshold_m and dist(curr, nxt) < threshold_m and dist(prev, nxt) < dist(prev, curr):
-                changed = True
-                i += 1
-            else:
-                result.append(curr)
-                i += 1
-        result.append(coords[-1])
-        coords = result
-    # Remove exact duplicate consecutive points
-    deduped = [coords[0]]
-    for pt in coords[1:]:
-        if pt["lat"] != deduped[-1]["lat"] or pt["lng"] != deduped[-1]["lng"]:
-            deduped.append(pt)
-    return deduped
