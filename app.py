@@ -260,70 +260,23 @@ def get_route():
             if r:
                 all_routes.append(analyze_route(r))
 
-        origin_lat = G.nodes[origin]["y"]
-        origin_lng = G.nodes[origin]["x"]
-        dest_lat = G.nodes[destination]["y"]
-        dest_lng = G.nodes[destination]["x"]
+        # Yen's k-shortest paths — finds genuinely different routes, no hardcoded waypoints
+        print("Building simple graph for Yen's algorithm...")
+        G_simple = nx.DiGraph()
+        for u, v, data in G.edges(data=True):
+            imp = data.get("impedance_gentle", float("inf"))
+            if not G_simple.has_edge(u, v) or imp < G_simple[u][v]["impedance_gentle"]:
+                G_simple.add_edge(u, v, **data)
 
-        # Perpendicular unit vector (rotated 90° from direct path)
-        dlat = dest_lat - origin_lat
-        dlng = dest_lng - origin_lng
-        mag = math.sqrt(dlat**2 + dlng**2) or 1
-        perp_lat = -dlng / mag
-        perp_lng =  dlat / mag
-
-        for weight in ["impedance_gentle", "impedance_moderate"]:
-            # Original inline waypoints (along direct path)
-            inline_fractions = [[0.33, 0.66], [0.25, 0.75], [0.4, 0.6]]
-            # Perpendicular offsets — explores flat detours left/right of direct line
-            # 0.004 ≈ 400m offset, 0.007 ≈ 700m — covers routes like Octavia Blvd
-            perp_configs = [
-                (0.5,  0.004), (0.5,  0.007), (0.5, -0.004), (0.5, -0.007),
-                (0.33, 0.005), (0.33, -0.005),
-                (0.66, 0.005), (0.66, -0.005),
-            ]
-
-            all_waypoint_sets = []
-            for fracs in inline_fractions:
-                all_waypoint_sets.append([
-                    (origin_lat + (dest_lat - origin_lat) * f,
-                     origin_lng + (dest_lng - origin_lng) * f)
-                    for f in fracs
-                ])
-            for f, offset in perp_configs:
-                mid_lat = origin_lat + (dest_lat - origin_lat) * f + perp_lat * offset
-                mid_lng = origin_lng + (dest_lng - origin_lng) * f + perp_lng * offset
-                all_waypoint_sets.append([(mid_lat, mid_lng)])
-
-            for wpt_coords in all_waypoint_sets:
-                try:
-                    waypoints = []
-                    for wlat, wlng in wpt_coords:
-                        wnode = ox.distance.nearest_nodes(G, wlng, wlat)
-                        if wnode not in (origin, destination):
-                            waypoints.append(wnode)
-
-                    if not waypoints:
-                        continue
-
-                    full_route = []
-                    nodes_seq = [origin] + waypoints + [destination]
-                    valid = True
-                    for i in range(len(nodes_seq) - 1):
-                        seg = ox.routing.shortest_path(G, nodes_seq[i], nodes_seq[i + 1], weight=weight)
-                        if not seg:
-                            valid = False
-                            break
-                        if full_route:
-                            full_route += seg[1:]
-                        else:
-                            full_route = seg
-
-                    if valid and full_route:
-                        all_routes.append(analyze_route(full_route))
-                except:
-                    pass
-
+        try:
+            candidate_count = 0
+            for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
+                candidate_count += 1
+                if candidate_count > 50:
+                    break
+                all_routes.append(analyze_route(path))
+        except Exception as e:
+            print(f"Yen's algorithm error: {e}")
         print(f"📊 Before dedup: {len(all_routes)} routes")
         for r in all_routes:
             print(f"   {r['distanceInMiles']}mi avg={r['avgGradePct']}% max={r['maxGradePct']}%")
