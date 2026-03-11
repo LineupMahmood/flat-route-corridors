@@ -27,7 +27,7 @@ import pickle
 
 # v5 — new smooth impedance weights (no hard cutoff)
 # Changing this forces Railway to rebuild the pickle with new weights
-PICKLE_PATH = "sf_walk_network_v6.pkl"
+PICKLE_PATH = "sf_walk_network_v7.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
@@ -38,16 +38,18 @@ if os.path.exists(PICKLE_PATH):
 else:
     print("No pickle found, loading from graphml (slow, one-time)...")
     G = ox.load_graphml(filepath=GRAPHML_PATH)
+    COMFORT_GRADE = 0.05   # grades below 5% receive zero excess penalty
+    K_GENTLE   = 1000      # strong penalty above comfort threshold
+    K_MODERATE = 400       # softer fallback variant
+
     for u, v, k, data in G.edges(keys=True, data=True):
         grade = float(data.get("grade_abs", 0))
         length = float(data.get("length", 0))
+        excess = max(0.0, grade - COMFORT_GRADE)
 
-        # CHANGE: smooth quadratic curve, no hard cutoff.
-        # 5% grade  → 1.075x multiplier (barely penalized)
-        # 10% grade → 1.30x multiplier  (was 999999x before)
-        # 20% grade → 2.20x multiplier  (steep but not impassable)
-        # This stops the router forcing absurd detours to avoid moderate hills.
-        data["impedance_high"] = length * (1 + 200 * grade ** 2)
+        # Only penalize grade ABOVE the comfort threshold.
+        # Octavia (2.5%) → excess=0 → multiplier=1.0 (no penalty)
+        # Steep  (13%)   → excess=0.08 → multiplier=7.4 (heavy penalty
 
         # Stricter variant — used for finding the flattest option.
         # 10% grade → 1.80x, 20% grade → 4.20x
@@ -256,7 +258,7 @@ def get_route():
 
         all_routes = []
 
-        for weight in ["impedance_high", "impedance_max", "length"]:
+        for weight in ["impedance_gentle", "impedance_moderate", "length"]:
             r = ox.routing.shortest_path(G, origin, destination, weight=weight)
             if r:
                 all_routes.append(analyze_route(r))
@@ -266,18 +268,45 @@ def get_route():
         dest_lat = G.nodes[destination]["y"]
         dest_lng = G.nodes[destination]["x"]
 
-        for weight in ["impedance_high", "impedance_max"]:
-            for fractions in [[0.33, 0.66], [0.25, 0.75], [0.4, 0.6]]:
+        # Perpendicular unit vector (rotated 90° from direct path)
+        dlat = dest_lat - origin_lat
+        dlng = dest_lng - origin_lng
+        mag = math.sqrt(dlat**2 + dlng**2) or 1
+        perp_lat = -dlng / mag
+        perp_lng =  dlat / mag
+
+        for weight in ["impedance_gentle", "impedance_moderate"]:
+            # Original inline waypoints (along direct path)
+            inline_fractions = [[0.33, 0.66], [0.25, 0.75], [0.4, 0.6]]
+            # Perpendicular offsets — explores flat detours left/right of direct line
+            # 0.004 ≈ 400m offset, 0.007 ≈ 700m — covers routes like Octavia Blvd
+            perp_configs = [
+                (0.5,  0.004), (0.5,  0.007), (0.5, -0.004), (0.5, -0.007),
+                (0.33, 0.005), (0.33, -0.005),
+                (0.66, 0.005), (0.66, -0.005),
+            ]
+
+            all_waypoint_sets = []
+            for fracs in inline_fractions:
+                all_waypoint_sets.append([
+                    (origin_lat + (dest_lat - origin_lat) * f,
+                     origin_lng + (dest_lng - origin_lng) * f)
+                    for f in fracs
+                ])
+            for f, offset in perp_configs:
+                mid_lat = origin_lat + (dest_lat - origin_lat) * f + perp_lat * offset
+                mid_lng = origin_lng + (dest_lng - origin_lng) * f + perp_lng * offset
+                all_waypoint_sets.append([(mid_lat, mid_lng)])
+
+            for wpt_coords in all_waypoint_sets:
                 try:
                     waypoints = []
-                    for f in fractions:
-                        wlat = origin_lat + (dest_lat - origin_lat) * f
-                        wlng = origin_lng + (dest_lng - origin_lng) * f
+                    for wlat, wlng in wpt_coords:
                         wnode = ox.distance.nearest_nodes(G, wlng, wlat)
                         if wnode not in (origin, destination):
                             waypoints.append(wnode)
 
-                    if len(waypoints) < 2:
+                    if not waypoints:
                         continue
 
                     full_route = []
