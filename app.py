@@ -1,6 +1,20 @@
 import os
 import gzip
 import math
+import time as _time
+
+def has_backtrack(path, threshold=1.5):
+    """Returns True if route goes more than threshold * crow_flies away from destination."""
+    coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
+    dest = coords[-1]
+    def d(c):
+        return math.sqrt(((c[0]-dest[0])*111000)**2 + ((c[1]-dest[1])*111000)**2)
+    crow = d(coords[0])
+    if crow < 50:
+        return False  # skip filter for very short routes
+    max_dist = max(d(c) for c in coords)
+    return max_dist > crow * threshold
+
 import urllib.request
 import osmnx as ox
 import networkx as nx
@@ -236,14 +250,24 @@ def get_route():
                 G_simple.add_edge(u, v, **data)
 
         try:
-            candidate_count = 0
+            candidates = []
+            MAX_SCAN = 500
+            MAX_CLEAN = 10
+            TIME_LIMIT = 25
+            scanned = 0
+            _t0 = _time.time()
             for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
-                candidate_count += 1
-                if candidate_count > 50:
+                scanned += 1
+                if not has_backtrack(path, threshold=1.5):
+                    candidates.append(path)
+                if len(candidates) >= MAX_CLEAN or scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
                     break
+            print(f"[routing] scanned={scanned} clean={len(candidates)} elapsed={_time.time()-_t0:.1f}s")
+            for path in candidates:
                 all_routes.append(analyze_route(path))
         except Exception as e:
             print(f"Yen's algorithm error: {e}")
+
         print(f"📊 Before dedup: {len(all_routes)} routes")
         for r in all_routes:
             print(f"   {r['distanceInMiles']}mi avg={r['avgGradePct']}% max={r['maxGradePct']}%")
@@ -290,4 +314,3 @@ def get_route():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
-
