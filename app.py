@@ -9,8 +9,8 @@ from shapely.geometry import LineString
 
 app = Flask(__name__)
 
-GRAPHML_PATH = "sf_walk_network_elevation_v3.graphml"
-GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/V.3/sf_walk_network_elevation_v3.graphml.gz"
+GRAPHML_PATH = "sf_walk_network_elevation_v4.graphml"
+GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/V4/sf_walk_network_elevation_v4.graphml.gz"
 
 if not os.path.exists(GRAPHML_PATH):
     print("Graph file not found. Downloading...")
@@ -27,7 +27,7 @@ import pickle
 
 # v5 — new smooth impedance weights (no hard cutoff)
 # Changing this forces Railway to rebuild the pickle with new weights
-PICKLE_PATH = "sf_walk_network_v8.pkl"
+PICKLE_PATH = "sf_walk_network_v9.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
