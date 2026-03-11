@@ -71,7 +71,7 @@ def straight_line_dist_miles(lat1, lng1, lat2, lng2):
     return haversine_dist((lat1, lng1), (lat2, lng2)) / 1609.34
 
 
-def remove_reversals(coords, threshold_m=20):
+def remove_reversals(coords, threshold_m=50):
     """
     Remove A→B→A ping-pong artifacts at edge junctions.
     Also deduplicates exact consecutive duplicates.
