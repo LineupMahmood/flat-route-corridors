@@ -112,54 +112,55 @@ def remove_reversals(coords, threshold_m=50):
 
 def extract_route_coords(route):
     """
-    Build polyline from edge geometries ONLY — never insert node coordinates.
-    After consolidate_intersections, node centroids don't sit on edge geometry
-    endpoints, so inserting them creates ping-pong artifacts.
+    Build polyline by walking edges in order.
+    Orient every edge relative to the last accumulated point — not node centroid.
     """
     coords = []
 
     for i in range(len(route) - 1):
         u, v = route[i], route[i + 1]
         edge_data = G.get_edge_data(u, v)
-        edge = min(edge_data.values(), key=lambda d: d.get("length", 0)) if edge_data else {}
+        edge = min(edge_data.values(), key=lambda d: float(d.get("length", 0))) if edge_data else {}
         geom = edge.get("geometry")
 
         if geom is not None:
-            pts = list(geom.coords)
+            pts = [(lat, lng) for lng, lat in geom.coords]
         else:
             pts = [
-                (G.nodes[u]["x"], G.nodes[u]["y"]),
-                (G.nodes[v]["x"], G.nodes[v]["y"])
+                (G.nodes[u]["y"], G.nodes[u]["x"]),
+                (G.nodes[v]["y"], G.nodes[v]["x"])
             ]
 
-        if coords:
-            last = (coords[-1]["lat"], coords[-1]["lng"])
-        else:
-            last = (G.nodes[u]["y"], G.nodes[u]["x"])
-        if haversine_dist(last, (pts[0][1], pts[0][0])) > haversine_dist(last, (pts[-1][1], pts[-1][0])):
+        # Orient relative to last accumulated point (or u-node if first edge)
+        anchor = (coords[-1]["lat"], coords[-1]["lng"]) if coords else (G.nodes[u]["y"], G.nodes[u]["x"])
+        if haversine_dist(anchor, pts[0]) > haversine_dist(anchor, pts[-1]):
             pts = pts[::-1]
 
-        for lng, lat in pts[:-1]:
+        # Add all points except last (next edge will start there)
+        for lat, lng in pts[:-1]:
             coords.append({"lat": lat, "lng": lng})
 
+    # Add final destination point
     if len(route) >= 2:
         u, v = route[-2], route[-1]
         edge_data = G.get_edge_data(u, v)
-        edge = min(edge_data.values(), key=lambda d: d.get("length", 0)) if edge_data else {}
+        edge = min(edge_data.values(), key=lambda d: float(d.get("length", 0))) if edge_data else {}
         geom = edge.get("geometry")
         if geom is not None:
-            pts = list(geom.coords)
-            if coords:
-                last = (coords[-1]["lat"], coords[-1]["lng"])
-            else:
-                last = (G.nodes[u]["y"], G.nodes[u]["x"])
-            if haversine_dist(last, (pts[0][1], pts[0][0])) > haversine_dist(last, (pts[-1][1], pts[-1][0])):
+            pts = [(lat, lng) for lng, lat in geom.coords]
+            anchor = (coords[-1]["lat"], coords[-1]["lng"]) if coords else (G.nodes[u]["y"], G.nodes[u]["x"])
+            if haversine_dist(anchor, pts[0]) > haversine_dist(anchor, pts[-1]):
                 pts = pts[::-1]
-            lng, lat = pts[-1]
-            coords.append({"lat": lat, "lng": lng})
+            coords.append({"lat": pts[-1][0], "lng": pts[-1][1]})
         else:
             coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
-    return remove_reversals(coords)
+
+    # Deduplicate exact consecutive duplicates only
+    deduped = [coords[0]]
+    for pt in coords[1:]:
+        if pt["lat"] != deduped[-1]["lat"] or pt["lng"] != deduped[-1]["lng"]:
+            deduped.append(pt)
+    return deduped
 
 
 # ── Route analysis ────────────────────────────────────────────────────────────
