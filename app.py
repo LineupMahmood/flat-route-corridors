@@ -167,7 +167,8 @@ def analyze_route(route):
     for i in range(len(route) - 1):
         u, v = route[i], route[i + 1]
         edge_data = G.get_edge_data(u, v)
-        edge = edge_data[0] if edge_data else {}
+        # Pick the flattest edge between these two nodes, matching Yen's selection
+        edge = min(edge_data.values(), key=lambda d: float(d.get("grade_abs") or 0)) if edge_data else {}
         length = float(edge.get("length") or 0)
         grade = float(edge.get("grade") or 0)
         grade_abs = abs(float(edge.get("grade_abs") or abs(grade)))
