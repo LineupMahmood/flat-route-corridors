@@ -38,26 +38,22 @@ if os.path.exists(PICKLE_PATH):
 else:
     print("No pickle found, loading from graphml (slow, one-time)...")
     G = ox.load_graphml(filepath=GRAPHML_PATH)
-    COMFORT_GRADE = 0.05   # grades below 5% receive zero excess penalty
-    K_GENTLE   = 1000      # strong penalty above comfort threshold
-    K_MODERATE = 400       # softer fallback variant
-
-    for u, v, k, data in G.edges(keys=True, data=True):
-        grade = float(data.get("grade_abs", 0))
-        length = float(data.get("length", 0))
-        excess = max(0.0, grade - COMFORT_GRADE)
-
-        # Only penalize grade ABOVE the comfort threshold.
-        # Octavia (2.5%) → excess=0 → multiplier=1.0 (no penalty)
-        # Steep  (13%)   → excess=0.08 → multiplier=7.4 (heavy penalty
-
-        # Stricter variant — used for finding the flattest option.
-        # 10% grade → 1.80x, 20% grade → 4.20x
-        data["impedance_max"] = length * (1 + 500 * grade ** 2)
-
     print("Saving pickle cache for fast future loads...")
     with open(PICKLE_PATH, "wb") as f:
         pickle.dump(G, f)
+
+# Always recompute weights — never trust what's in the pickle
+print("Computing edge weights...")
+COMFORT_GRADE = 0.05
+K_GENTLE   = 1000
+K_MODERATE = 400
+for u, v, k, data in G.edges(keys=True, data=True):
+    grade = float(data.get("grade_abs", 0))
+    length = float(data.get("length", 0))
+    excess = max(0.0, grade - COMFORT_GRADE)
+    data["impedance_gentle"]   = length * (1 + K_GENTLE   * excess ** 2)
+    data["impedance_moderate"] = length * (1 + K_MODERATE * excess ** 2)
+print("Weights ready.")
 
 print("Network ready. Server starting...")
 
