@@ -27,7 +27,7 @@ import pickle
 
 # v5 — new smooth impedance weights (no hard cutoff)
 # Changing this forces Railway to rebuild the pickle with new weights
-PICKLE_PATH = "sf_walk_network_v7.pkl"
+PICKLE_PATH = "sf_walk_network_v8.pkl"
 
 print("Loading elevation network...")
 if os.path.exists(PICKLE_PATH):
@@ -233,7 +233,8 @@ def health():
     for u, v, data in list(G.edges(data=True))[:5]:
         sample.append({
             "grade_abs": data.get("grade_abs"),
-            "impedance_high": data.get("impedance_high")
+            "impedance_gentle": data.get("impedance_gentle"),
+            "impedance_moderate": data.get("impedance_moderate")
         })
     return {"status": "ok", "version": "v9-smooth-impedance", "sample_edges": sample}
 
@@ -341,7 +342,7 @@ def get_route():
         # CHANGE: 2x straight-line distance cap.
         # Prevents the router picking an absurd detour just to avoid a moderate hill.
         # Floor of 0.5mi so very short trips still get reasonable options.
-        max_allowed_miles = max(crow_flies_miles * 4.0, 0.5)
+        max_allowed_miles = max(crow_flies_miles * 6.0, 1.5)
         filtered = [r for r in unique_routes
                     if r["distanceInMiles"] <= max_allowed_miles
                     and r["maxGradePct"] <= 20.0]
