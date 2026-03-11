@@ -132,8 +132,11 @@ def extract_route_coords(route):
                 (G.nodes[v]["x"], G.nodes[v]["y"])
             ]
 
-        u_pos = (G.nodes[u]["y"], G.nodes[u]["x"])
-        if haversine_dist(u_pos, (pts[0][1], pts[0][0])) > haversine_dist(u_pos, (pts[-1][1], pts[-1][0])):
+        if coords:
+            last = (coords[-1]["lat"], coords[-1]["lng"])
+        else:
+            last = (G.nodes[u]["y"], G.nodes[u]["x"])
+        if haversine_dist(last, (pts[0][1], pts[0][0])) > haversine_dist(last, (pts[-1][1], pts[-1][0])):
             pts = pts[::-1]
 
         for lng, lat in pts[:-1]:
@@ -146,11 +149,14 @@ def extract_route_coords(route):
         geom = edge.get("geometry")
         if geom is not None:
             pts = list(geom.coords)
-            u_pos = (G.nodes[u]["y"], G.nodes[u]["x"])
-            if haversine_dist(u_pos, (pts[0][1], pts[0][0])) > haversine_dist(u_pos, (pts[-1][1], pts[-1][0])):
-                pts = pts[::-1]
-            lng, lat = pts[-1]
-            coords.append({"lat": lat, "lng": lng})
+            if coords:
+            last = (coords[-1]["lat"], coords[-1]["lng"])
+        else:
+            last = (G.nodes[u]["y"], G.nodes[u]["x"])
+        if haversine_dist(last, (pts[0][1], pts[0][0])) > haversine_dist(last, (pts[-1][1], pts[-1][0])):
+            pts = pts[::-1]
+        lng, lat = pts[-1]
+        coords.append({"lat": lat, "lng": lng})
         else:
             coords.append({"lat": G.nodes[v]["y"], "lng": G.nodes[v]["x"]})
 
