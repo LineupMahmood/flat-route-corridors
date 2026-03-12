@@ -265,15 +265,31 @@ def get_route():
 
         try:
             candidates = []
-            MAX_SCAN = 500
-            MAX_CLEAN = 50
+            seen_midpoints = []
+            MAX_SCAN = 5000
+            MAX_CLEAN = 15
             TIME_LIMIT = 25
             scanned = 0
             _t0 = _time.time()
             for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
                 scanned += 1
-                if not has_backtrack(path):
+                if has_backtrack(path):
+                    if scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
+                        break
+                    continue
+                # Get midpoint of this path
+                mid_node = path[len(path) // 2]
+                mid = (G.nodes[mid_node]["y"], G.nodes[mid_node]["x"])
+                # Skip if midpoint is too close to an already accepted route
+                too_close = False
+                for seen in seen_midpoints:
+                    dist = math.sqrt(((mid[0]-seen[0])*111000)**2 + ((mid[1]-seen[1])*111000)**2)
+                    if dist < 80:
+                        too_close = True
+                        break
+                if not too_close:
                     candidates.append(path)
+                    seen_midpoints.append(mid)
                 if len(candidates) >= MAX_CLEAN or scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
                     break
             print(f"[routing] scanned={scanned} clean={len(candidates)} elapsed={_time.time()-_t0:.1f}s")
