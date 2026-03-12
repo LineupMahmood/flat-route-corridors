@@ -83,8 +83,9 @@ for u, v, k, data in G.edges(keys=True, data=True):
     # Penalize unpleasant walking streets (major roads, highways)
     if isinstance(highway, list):
         highway = highway[0] if highway else ""
-    road_penalty = 3.0 if highway in ("primary", "trunk", "motorway") else \
-                   2.0 if highway in ("secondary", "tertiary") else 1.0
+    road_penalty = 5.0 if highway in ("primary", "trunk", "motorway") else \
+                   3.0 if highway in ("secondary", "tertiary") else \
+                   2.0 if highway in ("service", "busway") else 1.0
     data["impedance_gentle"]   = length * road_penalty * (1 + K_GENTLE   * excess ** 2)
     data["impedance_moderate"] = length * road_penalty * (1 + K_MODERATE * excess ** 2)
 print("Weights ready.")
