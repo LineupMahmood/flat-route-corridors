@@ -79,8 +79,13 @@ for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
     excess = max(0.0, grade - COMFORT_GRADE)
-    data["impedance_gentle"]   = length * (1 + K_GENTLE   * excess ** 2)
-    data["impedance_moderate"] = length * (1 + K_MODERATE * excess ** 2)
+    highway = str(data.get("highway", ""))
+    # Penalize unpleasant walking streets (major roads, highways)
+    if isinstance(highway, list):
+        highway = highway[0] if highway else ""
+    road_penalty = 3.0 if highway in ("primary", "trunk", "motorway") else 1.0
+    data["impedance_gentle"]   = length * road_penalty * (1 + K_GENTLE   * excess ** 2)
+    data["impedance_moderate"] = length * road_penalty * (1 + K_MODERATE * excess ** 2)
 print("Weights ready.")
 
 print("Network ready. Server starting...")
