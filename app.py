@@ -268,7 +268,7 @@ def get_route():
             seen_midpoints = []
             MAX_SCAN = 5000
             MAX_CLEAN = 15
-            TIME_LIMIT = 25
+            TIME_LIMIT = 8
             scanned = 0
             _t0 = _time.time()
             for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
