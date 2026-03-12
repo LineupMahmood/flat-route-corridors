@@ -72,9 +72,9 @@ else:
 
 # Always recompute weights — never trust what's in the pickle
 print("Computing edge weights...")
-COMFORT_GRADE = 0.05
-K_GENTLE   = 1000
-K_MODERATE = 400
+COMFORT_GRADE = 0.02
+K_GENTLE   = 1500
+K_MODERATE = 600
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
@@ -284,7 +284,7 @@ def get_route():
                 too_close = False
                 for seen in seen_midpoints:
                     dist = math.sqrt(((mid[0]-seen[0])*111000)**2 + ((mid[1]-seen[1])*111000)**2)
-                    if dist < 80:
+                    if dist < 250:
                         too_close = True
                         break
                 if not too_close:
