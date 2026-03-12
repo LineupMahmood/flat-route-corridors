@@ -217,7 +217,22 @@ def deduplicate_routes(routes):
 
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
-
+@app.route("/debug_grade", methods=["GET"])
+def debug_grade():
+    results = []
+    for u, v, data in G.edges(data=True):
+        u_data = G.nodes[u]
+        v_data = G.nodes[v]
+        # Check if edge is in Octavia or Van Ness corridor
+        mid_lng = (u_data["x"] + v_data["x"]) / 2
+        mid_lat = (u_data["y"] + v_data["y"]) / 2
+        if 37.794 < mid_lat < 37.800:
+            if -122.4255 < mid_lng < -122.4240:  # Octavia
+                results.append({"street": "Octavia", "grade_abs": data.get("grade_abs"), "length": data.get("length")})
+            elif -122.4240 < mid_lng < -122.4228:  # Van Ness
+                results.append({"street": "VanNess", "grade_abs": data.get("grade_abs"), "length": data.get("length")})
+    return jsonify(results)
+    
 @app.route("/health", methods=["GET"])
 def health():
     sample = []
