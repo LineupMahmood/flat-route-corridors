@@ -3,17 +3,31 @@ import gzip
 import math
 import time as _time
 
-def has_backtrack(path, threshold=1.5):
-    """Returns True if route goes more than threshold * crow_flies away from destination."""
+def has_backtrack(path, max_reversals=3):
+    """
+    Rejects routes that repeatedly oscillate toward/away from destination.
+    Octavia-style overshoots are fine. NE→SE→NE→SE zigzags are not.
+    """
     coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
     dest = coords[-1]
-    def d(c):
+    def dist_to_dest(c):
         return math.sqrt(((c[0]-dest[0])*111000)**2 + ((c[1]-dest[1])*111000)**2)
-    crow = d(coords[0])
+
+    dists = [dist_to_dest(c) for c in coords]
+    crow = dists[0]
     if crow < 50:
-        return False  # skip filter for very short routes
-    max_dist = max(d(c) for c in coords)
-    return max_dist > crow * threshold
+        return False
+
+    reversals = 0
+    min_seen = dists[0]
+    for i in range(1, len(dists)):
+        if dists[i] < min_seen:
+            min_seen = dists[i]
+        elif dists[i] > min_seen + crow * 0.15:
+            reversals += 1
+            min_seen = dists[i]
+
+    return reversals > max_reversals
 
 import urllib.request
 import osmnx as ox
