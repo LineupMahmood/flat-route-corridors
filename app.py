@@ -272,7 +272,7 @@ def get_route():
             _t0 = _time.time()
             for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
                 scanned += 1
-                if not has_backtrack(path, threshold=1.5):
+               if not has_backtrack(path):
                     candidates.append(path)
                 if len(candidates) >= MAX_CLEAN or scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
                     break
