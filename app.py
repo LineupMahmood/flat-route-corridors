@@ -235,7 +235,7 @@ def debug_grade():
             if -122.4255 < mid_lng < -122.4240:  # Octavia
                 results.append({"street": "Octavia", "grade_abs": data.get("grade_abs"), "length": data.get("length")})
             elif -122.4240 < mid_lng < -122.4228:  # Van Ness
-                results.append({"street": "VanNess", "grade_abs": data.get("grade_abs"), "length": data.get("length")})
+                results.append({"street": "VanNess", "grade_abs": data.get("grade_abs"), "length": data.get("length"), "highway": str(data.get("highway", "MISSING"))})
     return jsonify(results)
     
 @app.route("/health", methods=["GET"])
