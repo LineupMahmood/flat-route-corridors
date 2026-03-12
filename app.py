@@ -265,7 +265,7 @@ def get_route():
 
         try:
             candidates = []
-            MAX_SCAN = 2000
+            MAX_SCAN = 500
             MAX_CLEAN = 50
             TIME_LIMIT = 25
             scanned = 0
