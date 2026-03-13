@@ -73,8 +73,8 @@ else:
 # Always recompute weights — never trust what's in the pickle
 print("Computing edge weights...")
 COMFORT_GRADE = 0.02
-K_GENTLE   = 5000
-K_MODERATE = 1000
+K_GENTLE   = 1500
+K_MODERATE = 600
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
