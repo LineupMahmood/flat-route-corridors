@@ -282,7 +282,9 @@ def get_route():
         _t0 = _time.time()
         orig_lng = G.nodes[origin]["x"]
         dest_lng = G.nodes[destination]["x"]
-        mid_lat = (G.nodes[origin]["y"] + G.nodes[destination]["y"]) / 2
+        orig_lat = G.nodes[origin]["y"]
+        dest_lat = G.nodes[destination]["y"]
+        mid_lat = orig_lat  # waypoint at origin latitude = corridor entry point
 
         # Sample corridors across the full longitude range plus small buffer
         lng_min = min(orig_lng, dest_lng) - 0.006
