@@ -276,48 +276,36 @@ def get_route():
             if r:
                 all_routes.append(analyze_route(r))
 
-        # Yen's k-shortest paths — finds genuinely different routes, no hardcoded waypoints
-        print("Building simple graph for Yen's algorithm...")
-        G_simple = nx.DiGraph()
-        for u, v, data in G.edges(data=True):
-            imp = data.get("impedance_gentle", float("inf"))
-            if not G_simple.has_edge(u, v) or imp < G_simple[u][v]["impedance_gentle"]:
-                G_simple.add_edge(u, v, **data)
+        # Corridor-based routing: sample N/S streets between origin and destination
+        # Route origin → corridor_waypoint → destination for each corridor
+        print("Running corridor-based routing...")
+        _t0 = _time.time()
+        orig_lng = G.nodes[origin]["x"]
+        dest_lng = G.nodes[destination]["x"]
+        mid_lat = (G.nodes[origin]["y"] + G.nodes[destination]["y"]) / 2
 
-        try:
-            candidates = []
-            seen_midpoints = []
-            MAX_SCAN = 5000
-            MAX_CLEAN = 15
-            TIME_LIMIT = 8
-            scanned = 0
-            _t0 = _time.time()
-            for path in nx.shortest_simple_paths(G_simple, origin, destination, weight="impedance_gentle"):
-                scanned += 1
-                if has_backtrack(path):
-                    if scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
-                        break
+        # Sample corridors across the full longitude range plus small buffer
+        lng_min = min(orig_lng, dest_lng) - 0.006
+        lng_max = max(orig_lng, dest_lng) + 0.006
+        step = 0.0008
+        n_steps = int((lng_max - lng_min) / step) + 1
+        corridor_lngs = [lng_min + i * step for i in range(n_steps)]
+
+        seen_waypoints = set()
+        for corridor_lng in corridor_lngs:
+            try:
+                wp = ox.distance.nearest_nodes(G, corridor_lng, mid_lat)
+                if wp in seen_waypoints or wp == origin or wp == destination:
                     continue
-                # Get midpoint of this path
-                mid_node = path[len(path) // 2]
-                mid = (G.nodes[mid_node]["y"], G.nodes[mid_node]["x"])
-                # Skip if midpoint is too close to an already accepted route
-                too_close = False
-                for seen in seen_midpoints:
-                    dist = math.sqrt(((mid[0]-seen[0])*111000)**2 + ((mid[1]-seen[1])*111000)**2)
-                    if dist < 250:
-                        too_close = True
-                        break
-                if not too_close:
-                    candidates.append(path)
-                    seen_midpoints.append(mid)
-                if len(candidates) >= MAX_CLEAN or scanned >= MAX_SCAN or (_time.time() - _t0) > TIME_LIMIT:
-                    break
-            print(f"[routing] scanned={scanned} clean={len(candidates)} elapsed={_time.time()-_t0:.1f}s")
-            for path in candidates:
-                all_routes.append(analyze_route(path))
-        except Exception as e:
-            print(f"Yen's algorithm error: {e}")
+                seen_waypoints.add(wp)
+                path1 = ox.routing.shortest_path(G, origin, wp, weight="impedance_gentle")
+                path2 = ox.routing.shortest_path(G, wp, destination, weight="impedance_gentle")
+                if path1 and path2:
+                    full_path = path1 + path2[1:]
+                    all_routes.append(analyze_route(full_path))
+            except Exception as e:
+                continue
+        print(f"[corridor] corridors={len(seen_waypoints)} elapsed={_time.time()-_t0:.1f}s")
 
         print(f"📊 Before dedup: {len(all_routes)} routes")
         for r in all_routes:
