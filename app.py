@@ -296,14 +296,17 @@ def get_route():
         seen_waypoints = set()
         for corridor_lng in corridor_lngs:
             try:
-                wp = ox.distance.nearest_nodes(G, corridor_lng, mid_lat)
-                if wp in seen_waypoints or wp == origin or wp == destination:
+                wp_north = ox.distance.nearest_nodes(G, corridor_lng, orig_lat)
+                wp_south = ox.distance.nearest_nodes(G, corridor_lng, dest_lat)
+                key = (wp_north, wp_south)
+                if key in seen_waypoints or wp_north == origin or wp_south == destination:
                     continue
-                seen_waypoints.add(wp)
-                path1 = ox.routing.shortest_path(G, origin, wp, weight="impedance_gentle")
-                path2 = ox.routing.shortest_path(G, wp, destination, weight="impedance_gentle")
-                if path1 and path2:
-                    full_path = path1 + path2[1:]
+                seen_waypoints.add(key)
+                path1 = ox.routing.shortest_path(G, origin, wp_north, weight="impedance_gentle")
+                path2 = ox.routing.shortest_path(G, wp_north, wp_south, weight="impedance_gentle")
+                path3 = ox.routing.shortest_path(G, wp_south, destination, weight="impedance_gentle")
+                if path1 and path2 and path3:
+                    full_path = path1 + path2[1:] + path3[1:]
                     all_routes.append(analyze_route(full_path))
             except Exception as e:
                 continue
