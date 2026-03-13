@@ -188,7 +188,7 @@ def analyze_route(route):
         "elevationGainFt": round(total_gain * 3.281, 1),
         "maxGradePct": round(max_grade * 100, 1),
         "avgGradePct": round(avg_grade * 100, 1),
-        "_difficulty": avg_grade * 0.7 + max_grade * 0.3
+        "_difficulty": avg_grade * 0.7 + max_grade * 0.3 + (total_length / 1609.34) * 0.05
     }
 
 
