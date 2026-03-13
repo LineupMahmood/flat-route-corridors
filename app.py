@@ -73,8 +73,8 @@ else:
 # Always recompute weights — never trust what's in the pickle
 print("Computing edge weights...")
 COMFORT_GRADE = 0.02
-K_GENTLE   = 1500
-K_MODERATE = 600
+K_GENTLE   = 5000
+K_MODERATE = 1000
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
@@ -84,17 +84,7 @@ for u, v, k, data in G.edges(keys=True, data=True):
     if isinstance(highway, list):
         highway = highway[0] if highway else ""
     # Geographic exclusion: penalize Van Ness corridor heavily
-    try:
-        u_x = G.nodes[u]["x"]
-        v_x = G.nodes[v]["x"]
-        mid_x = (u_x + v_x) / 2
-        u_y = G.nodes[u]["y"]
-        v_y = G.nodes[v]["y"]
-        mid_y = (u_y + v_y) / 2
-        in_vanness = (-122.4242 < mid_x < -122.4220) and (37.793 < mid_y < 37.802)
-    except:
-        in_vanness = False
-    road_penalty = 10.0 if in_vanness else 1.0
+    road_penalty = 1.0
     data["impedance_gentle"]   = length * road_penalty * (1 + K_GENTLE   * excess ** 2)
     data["impedance_moderate"] = length * road_penalty * (1 + K_MODERATE * excess ** 2)
 print("Weights ready.")
