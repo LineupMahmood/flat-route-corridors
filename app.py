@@ -234,7 +234,7 @@ def debug_grade():
         mid_lat = (u_data["y"] + v_data["y"]) / 2
         if 37.794 < mid_lat < 37.800:
             if -122.4255 < mid_lng < -122.4240:  # Octavia
-                results.append({"street": "Octavia", "grade_abs": data.get("grade_abs"), "length": data.get("length")})
+                results.append({"street": "Octavia", "grade_abs": data.get("grade_abs"), "length": data.get("length"), "highway": str(data.get("highway", "MISSING"))})
             elif -122.4240 < mid_lng < -122.4228:  # Van Ness
                 results.append({"street": "VanNess", "grade_abs": data.get("grade_abs"), "length": data.get("length"), "highway": str(data.get("highway", "MISSING"))})
     return jsonify(results)
