@@ -113,13 +113,12 @@ def best_corridor_node(keyword, target_lat, target_lng, lat_band=0.006, lng_band
     if not candidate_nodes:
         return None
 
-    # Among candidates, pick the one with lowest avg adjacent grade
-    def avg_grade(n):
-        grades = [float(d.get("grade_abs", 0.05))
-                  for _, _, d in G.edges(n, data=True)]
-        return sum(grades) / len(grades) if grades else 0.05
+    # Pick the node closest to the target point
+    def dist_to_target(n):
+        return haversine((G.nodes[n]["y"], G.nodes[n]["x"]),
+                         (target_lat, target_lng))
 
-    return min(candidate_nodes, key=avg_grade)
+    return min(candidate_nodes, key=dist_to_target)
 
 def corridor_grade_in_band(keyword, lat_min, lat_max):
     """Average grade of corridor edges within a latitude band."""
