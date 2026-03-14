@@ -274,6 +274,11 @@ def corridor_route():
             # Reject if the detour is wildly out of the way
             feeder_dist = haversine((start_lat, start_lng), entry_coords)
             exit_dist   = haversine((end_lat,   end_lng),   exit_coords)
+            # Reject if feeder alone is longer than half the total trip
+            if feeder_dist > crow_m * 0.5:
+                print(f"  Skip {c['name']} — feeder too long ({feeder_dist:.0f}m vs {crow_m:.0f}m trip)")
+                continue
+
             detour_ratio = (feeder_dist + exit_dist) / crow_m
             if detour_ratio > 1.4:
                 print(f"  Skip {c['name']} — too much detour ({detour_ratio:.1f}x crow-flies)")
@@ -331,6 +336,23 @@ def corridor_route():
         total_miles = (feeder_stats["distanceInMiles"] +
                        corridor_stats["distanceInMiles"] +
                        exit_stats["distanceInMiles"])
+
+        # Final sanity check: corridor route must not be >1.8x the direct distance
+        if total_miles > direct_stats["distanceInMiles"] * 1.8:
+            print(f"⚠️ {corridor_name} total {total_miles:.2f}mi > 1.8x direct {direct_stats['distanceInMiles']:.2f}mi — falling back to direct")
+            return jsonify({
+                "suggestion": "direct",
+                "message": "No nearby corridor found that doesn't add too much distance.",
+                "directRoute": direct_stats,
+                "totalDistanceMiles": direct_stats["distanceInMiles"],
+                "steps": [{
+                    "step": 1,
+                    "instruction": f"Walk directly to your destination ({direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg grade).",
+                    "distanceMiles": direct_stats["distanceInMiles"],
+                    "gradePct": direct_stats["avgGradePct"],
+                    "type": "direct"
+                }]
+            })
 
         steps = generate_steps(feeder_stats, corridor_stats, exit_stats, corridor_name)
 
