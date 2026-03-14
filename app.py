@@ -209,6 +209,21 @@ def corridor_route():
 
         print(f"Direct route: {direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg")
 
+        # If direct route is already gentle, no corridor needed
+        if direct_grade < 0.04:
+            return jsonify({
+                "suggestion": "direct",
+                "message": "Your direct route is already gentle — no detour needed.",
+                "directRoute": direct_stats,
+                "steps": [{
+                    "step": 1,
+                    "instruction": f"Walk directly to your destination — already a gentle route ({direct_stats['avgGradePct']}% avg grade).",
+                    "distanceMiles": direct_stats["distanceInMiles"],
+                    "gradePct": direct_stats["avgGradePct"],
+                    "type": "direct"
+                }]
+            })
+
         # Latitude band for corridor evaluation
         lat_min = min(start_lat, end_lat) - 0.002
         lat_max = max(start_lat, end_lat) + 0.002
