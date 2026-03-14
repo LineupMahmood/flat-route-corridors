@@ -274,14 +274,16 @@ def corridor_route():
             # Reject if the detour is wildly out of the way
             feeder_dist = haversine((start_lat, start_lng), entry_coords)
             exit_dist   = haversine((end_lat,   end_lng),   exit_coords)
-            if feeder_dist + exit_dist > 2.5 * crow_m:
-                print(f"  Skip {c['name']} — too much detour ({(feeder_dist+exit_dist)/crow_m:.1f}x)")
+            detour_ratio = (feeder_dist + exit_dist) / crow_m
+            if detour_ratio > 1.4:
+                print(f"  Skip {c['name']} — too much detour ({detour_ratio:.1f}x crow-flies)")
                 continue
 
-            # Score = grade improvement, weighted slightly by span
-            # A longer flat corridor is more useful than a short one
+            # Score = grade improvement divided by detour cost
+            # A corridor 0.2x out of the way beats one that's 1.3x out of the way
+            # even if the far one is slightly flatter
             span_bonus = min(c["span_m"] / 1000, 1.0)  # caps at 1.0 for 1km+
-            score = pct_easier * (1 + 0.1 * span_bonus)
+            score = pct_easier * (1 + 0.1 * span_bonus) / (1 + detour_ratio)
 
             scored.append({
                 "name": c["name"],
