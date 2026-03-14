@@ -1,39 +1,7 @@
-import os
-import gzip
-import math
-import time as _time
-
-def has_backtrack(path, max_reversals=3):
-    """
-    Rejects routes that repeatedly oscillate toward/away from destination.
-    Octavia-style overshoots are fine. NE→SE→NE→SE zigzags are not.
-    """
-    coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
-    dest = coords[-1]
-    def dist_to_dest(c):
-        return math.sqrt(((c[0]-dest[0])*111000)**2 + ((c[1]-dest[1])*111000)**2)
-
-    dists = [dist_to_dest(c) for c in coords]
-    crow = dists[0]
-    if crow < 50:
-        return False
-
-    reversals = 0
-    min_seen = dists[0]
-    for i in range(1, len(dists)):
-        if dists[i] < min_seen:
-            min_seen = dists[i]
-        elif dists[i] > min_seen + crow * 0.15:
-            reversals += 1
-            min_seen = dists[i]
-
-    return reversals > max_reversals
-
-import urllib.request
+import os, gzip, math, time as _time, urllib.request, pickle
 import osmnx as ox
 import networkx as nx
 from flask import Flask, request, jsonify
-from shapely.geometry import LineString
 
 app = Flask(__name__)
 
@@ -41,348 +9,297 @@ GRAPHML_PATH = "sf_walk_network_elevation_v4.graphml"
 GRAPHML_GZ_URL = "https://github.com/LineupMahmood/flat-route-api/releases/download/V4/sf_walk_network_elevation_v4.graphml.gz"
 
 if not os.path.exists(GRAPHML_PATH):
-    print("Graph file not found. Downloading...")
+    print("Downloading graph...")
     gz_path = GRAPHML_PATH + ".gz"
     urllib.request.urlretrieve(GRAPHML_GZ_URL, gz_path)
-    print("Download complete. Decompressing...")
     with gzip.open(gz_path, 'rb') as f_in:
         with open(GRAPHML_PATH, 'wb') as f_out:
             f_out.write(f_in.read())
     os.remove(gz_path)
-    print("Decompression complete.")
 
-import pickle
-
-# v5 — new smooth impedance weights (no hard cutoff)
-# Changing this forces Railway to rebuild the pickle with new weights
-PICKLE_PATH = "sf_walk_network_v9.pkl"
-
-print("Loading elevation network...")
+PICKLE_PATH = "sf_corridors_v1.pkl"
+print("Loading graph...")
 if os.path.exists(PICKLE_PATH):
-    print("Found pickle cache, loading fast...")
     with open(PICKLE_PATH, "rb") as f:
         G = pickle.load(f)
     print("Pickle loaded.")
 else:
-    print("No pickle found, loading from graphml (slow, one-time)...")
     G = ox.load_graphml(filepath=GRAPHML_PATH)
-    print("Saving pickle cache for fast future loads...")
     with open(PICKLE_PATH, "wb") as f:
         pickle.dump(G, f)
+    print("Pickle saved.")
 
-# Always recompute weights — never trust what's in the pickle
 print("Computing edge weights...")
 COMFORT_GRADE = 0.02
-K_GENTLE   = 1500
-K_MODERATE = 600
-
-# Build arterial node set: any node that touches a primary/trunk road
-# or a road with 3+ lanes is "contaminated" — footways sharing these
-# nodes are penalized as unpleasant walking corridors (e.g. Van Ness).
-# Octavia has no primary edges and 1-2 lane service roads → unaffected.
-ARTERIAL_HIGHWAY = {"primary", "trunk", "motorway"}
-arterial_nodes = set()
-for u, v, data in G.edges(data=True):
-    hw = data.get("highway", "")
-    if isinstance(hw, list):
-        hw = hw[0] if hw else ""
-    lanes_raw = data.get("lanes", "0")
-    try:
-        lanes = int(str(lanes_raw).split(";")[0].strip())
-    except (ValueError, AttributeError):
-        lanes = 0
-    if hw in ARTERIAL_HIGHWAY or lanes >= 3:
-        arterial_nodes.add(u)
-        arterial_nodes.add(v)
-
-print(f"Arterial node set: {len(arterial_nodes)} nodes")
-
+K = 1500
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
     excess = max(0.0, grade - COMFORT_GRADE)
-    highway = str(data.get("highway", ""))
-    if isinstance(highway, list):
-        highway = highway[0] if highway else ""
-    # Only penalize the edge if it is ITSELF on an arterial — not merely
-    # touching one at an intersection. This prevents Octavia from being
-    # contaminated by cross streets (Union, Broadway) that share nodes.
-    hw = data.get("highway", "")
-    if isinstance(hw, list):
-        hw = hw[0] if hw else ""
-    lanes_raw = data.get("lanes", "0")
-    try:
-        edge_lanes = int(str(lanes_raw).split(";")[0].strip())
-    except (ValueError, AttributeError):
-        edge_lanes = 0
-    is_arterial_edge = hw in ARTERIAL_HIGHWAY or edge_lanes >= 3
-    # Secondary penalty: both endpoints on arterials (e.g. a service road
-    # sandwiched between two primary roads like Van Ness busway lanes)
-    both_arterial = (u in arterial_nodes and v in arterial_nodes)
-    arterial_penalty = 2.5 if (is_arterial_edge or both_arterial) else 1.0
-    data["impedance_gentle"]   = length * arterial_penalty * (1 + K_GENTLE   * excess ** 2)
-    data["impedance_moderate"] = length * arterial_penalty * (1 + K_MODERATE * excess ** 2)
-print("Weights ready.")
+    data["impedance"] = length * (1 + K * excess ** 2)
+print("Ready.")
 
-print("Network ready. Server starting...")
+# ── Corridors ─────────────────────────────────────────────────────────────────
+# Each corridor defines a flat section of SF by lat band + lng range.
+# Segments are evaluated only within the band relevant to the user's trip.
+CORRIDORS = [
+    {"name": "Octavia Blvd",    "keyword": "octavia",   "direction": "N-S"},
+    {"name": "Valencia Street", "keyword": "valencia",  "direction": "N-S"},
+    {"name": "Mission Street",  "keyword": "mission",   "direction": "N-S"},
+    {"name": "The Embarcadero", "keyword": "embarcadero","direction": "N-S"},
+    {"name": "Market Street",   "keyword": "market",    "direction": "NE-SW"},
+    {"name": "Columbus Avenue", "keyword": "columbus",  "direction": "NE-SW"},
+    {"name": "Fell Street",     "keyword": "fell",      "direction": "E-W"},
+    {"name": "Broadway",        "keyword": "broadway",  "direction": "E-W"},
+    {"name": "Brannan Street",  "keyword": "brannan",   "direction": "E-W"},
+    {"name": "King Street",     "keyword": "king",      "direction": "E-W"},
+    {"name": "Beach Street",    "keyword": "beach",     "direction": "E-W"},
+    {"name": "Bay Street",      "keyword": "bay",       "direction": "E-W"},
+]
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-# ── Utilities ─────────────────────────────────────────────────────────────────
-
-def haversine_dist(a, b):
-    """Distance in meters between two (lat, lng) tuples."""
+def haversine(a, b):
     dlat = (a[0] - b[0]) * 111000
     dlng = (a[1] - b[1]) * 111000 * math.cos(math.radians(a[0]))
-    return math.sqrt(dlat ** 2 + dlng ** 2)
+    return math.sqrt(dlat**2 + dlng**2)
 
-
-def straight_line_dist_miles(lat1, lng1, lat2, lng2):
-    return haversine_dist((lat1, lng1), (lat2, lng2)) / 1609.34
-
-
-def remove_reversals(coords, threshold_m=50):
-    """
-    Remove A→B→A ping-pong artifacts at edge junctions.
-    Also deduplicates exact consecutive duplicates.
-    """
-    def dist(a, b):
-        dlat = (a["lat"] - b["lat"]) * 111000
-        dlng = (a["lng"] - b["lng"]) * 111000 * math.cos(math.radians(a["lat"]))
-        return math.sqrt(dlat ** 2 + dlng ** 2)
-
-    changed = True
-    while changed:
-        changed = False
-        result = [coords[0]]
-        i = 1
-        while i < len(coords) - 1:
-            prev = result[-1]
-            curr = coords[i]
-            nxt = coords[i + 1]
-            if (dist(prev, curr) < threshold_m
-                    and dist(curr, nxt) < threshold_m
-                    and dist(prev, nxt) < dist(prev, curr)):
-                changed = True
-                i += 1
-            else:
-                result.append(curr)
-                i += 1
-        result.append(coords[-1])
-        coords = result
-
-    deduped = [coords[0]]
-    for pt in coords[1:]:
-        if pt["lat"] != deduped[-1]["lat"] or pt["lng"] != deduped[-1]["lng"]:
-            deduped.append(pt)
-    return deduped
-
-
-# ── Route geometry ────────────────────────────────────────────────────────────
-
-def extract_route_coords(route):
-    """
-    Node-coordinate-only polyline. Yen's guarantees no repeated nodes,
-    so this produces a clean sequence with no orientation or loop artifacts.
-    """
-    coords = []
-    for node in route:
-        coords.append({
-            "lat": G.nodes[node]["y"],
-            "lng": G.nodes[node]["x"]
-        })
-    return coords
-
-# ── Route analysis ────────────────────────────────────────────────────────────
-
-def analyze_route(route):
-    total_gain = 0
+def path_stats(path):
     total_length = 0
     grades = []
-
-    for i in range(len(route) - 1):
-        u, v = route[i], route[i + 1]
-        edge_data = G.get_edge_data(u, v)
-        # Pick the flattest edge between these two nodes, matching Yen's selection
-        edge = min(edge_data.values(), key=lambda d: float(d.get("grade_abs") or 0)) if edge_data else {}
-        length = float(edge.get("length") or 0)
-        grade = float(edge.get("grade") or 0)
-        grade_abs = abs(float(edge.get("grade_abs") or abs(grade)))
-        if length * grade > 0:
-            total_gain += length * grade
-        total_length += length
-        if length > 0:
-            grades.append(grade_abs)
-
-    coords = extract_route_coords(route)
-    max_grade = max(grades) if grades else 0
+    coords = []
+    for i in range(len(path) - 1):
+        u, v = path[i], path[i+1]
+        ed = G.get_edge_data(u, v)
+        if ed:
+            edge = min(ed.values(), key=lambda d: float(d.get("grade_abs", 99)))
+            total_length += float(edge.get("length", 0))
+            grades.append(float(edge.get("grade_abs", 0)))
+    for node in path:
+        coords.append({"lat": G.nodes[node]["y"], "lng": G.nodes[node]["x"]})
     avg_grade = sum(grades) / len(grades) if grades else 0
-
+    max_grade = max(grades) if grades else 0
     return {
         "coordinates": coords,
         "distanceInMiles": round(total_length / 1609.34, 2),
-        "elevationGainFt": round(total_gain * 3.281, 1),
-        "maxGradePct": round(max_grade * 100, 1),
         "avgGradePct": round(avg_grade * 100, 1),
-        "_difficulty": avg_grade * 0.7 + max_grade * 0.3 + (total_length / 1609.34) * 0.01
+        "maxGradePct": round(max_grade * 100, 1),
     }
 
+def best_corridor_node(keyword, target_lat, target_lng, lat_band=0.006, lng_band=0.006):
+    """
+    Find the node on a named corridor closest to (target_lat, target_lng).
+    Only considers nodes that sit on edges named with the keyword.
+    Returns the flattest such node within the band.
+    """
+    lat_min = target_lat - lat_band
+    lat_max = target_lat + lat_band
+    lng_min = target_lng - lng_band
+    lng_max = target_lng + lng_band
 
-def deduplicate_routes(routes):
-    unique = []
-    for r in routes:
-        coords = r["coordinates"]
-        if len(coords) < 2:
-            continue
-        is_dup = False
-        for u in unique:
-            u_coords = u["coordinates"]
-            mid = len(coords) // 2
-            u_mid = len(u_coords) // 2
-            same_dist = abs(r["distanceInMiles"] - u["distanceInMiles"]) < 0.1
-            same_grade = abs(r["avgGradePct"] - u["avgGradePct"]) < 0.3
-            if same_dist and same_grade and mid < len(coords) and u_mid < len(u_coords):
-                dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
-                dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                if math.sqrt(dlat ** 2 + dlng ** 2) * 111000 < 100:
-                    is_dup = True
-                    break
-            if mid < len(coords) and u_mid < len(u_coords):
-                dlat = coords[mid]["lat"] - u_coords[u_mid]["lat"]
-                dlng = coords[mid]["lng"] - u_coords[u_mid]["lng"]
-                if math.sqrt(dlat ** 2 + dlng ** 2) * 111000 < 40:
-                    is_dup = True
-                    break
-        if not is_dup:
-            unique.append(r)
-    return unique
-
-
-# ── Flask routes ──────────────────────────────────────────────────────────────
-@app.route("/debug_grade", methods=["GET"])
-def debug_grade():
-    results = []
+    candidate_nodes = set()
     for u, v, data in G.edges(data=True):
-        u_data = G.nodes[u]
-        v_data = G.nodes[v]
-        # Check if edge is in Octavia or Van Ness corridor
-        mid_lng = (u_data["x"] + v_data["x"]) / 2
-        mid_lat = (u_data["y"] + v_data["y"]) / 2
-        if 37.794 < mid_lat < 37.800:
-            if -122.4255 < mid_lng < -122.4240:  # Octavia
-                results.append({"street": "Octavia", "grade_abs": data.get("grade_abs"), "length": data.get("length"), "highway": str(data.get("highway", "MISSING"))})
-            elif -122.4240 < mid_lng < -122.4228:  # Van Ness
-                results.append({"street": "VanNess", "grade_abs": data.get("grade_abs"), "length": data.get("length"), "highway": str(data.get("highway", "MISSING"))})
-    return jsonify(results)
-    
+        name = data.get("name", "")
+        if isinstance(name, list):
+            name = name[0] if name else ""
+        if keyword not in name.lower():
+            continue
+        for node in [u, v]:
+            nx_ = G.nodes[node]["x"]
+            ny_ = G.nodes[node]["y"]
+            if lat_min < ny_ < lat_max and lng_min < nx_ < lng_max:
+                candidate_nodes.add(node)
+
+    if not candidate_nodes:
+        return None
+
+    # Among candidates, pick the one with lowest avg adjacent grade
+    def avg_grade(n):
+        grades = [float(d.get("grade_abs", 0.05))
+                  for _, _, d in G.edges(n, data=True)]
+        return sum(grades) / len(grades) if grades else 0.05
+
+    return min(candidate_nodes, key=avg_grade)
+
+def corridor_grade_in_band(keyword, lat_min, lat_max):
+    """Average grade of corridor edges within a latitude band."""
+    grades = []
+    for u, v, data in G.edges(data=True):
+        name = data.get("name", "")
+        if isinstance(name, list):
+            name = name[0] if name else ""
+        if keyword not in name.lower():
+            continue
+        mid_lat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2
+        if lat_min < mid_lat < lat_max:
+            grades.append(float(data.get("grade_abs", 0)))
+    return sum(grades) / len(grades) if grades else None
+
+def generate_steps(feeder_stats, corridor_stats, exit_stats, corridor_name):
+    """Generate 3 plain-English step cards."""
+    steps = []
+
+    # Step 1 — walk to corridor
+    d1 = feeder_stats["distanceInMiles"]
+    if d1 < 0.05:
+        steps.append({
+            "step": 1,
+            "instruction": f"You're already near {corridor_name}. Head onto it.",
+            "distanceMiles": d1,
+            "gradePct": feeder_stats["avgGradePct"],
+            "type": "feeder"
+        })
+    else:
+        steps.append({
+            "step": 1,
+            "instruction": f"Walk {d1:.2f}mi to reach {corridor_name}.",
+            "distanceMiles": d1,
+            "gradePct": feeder_stats["avgGradePct"],
+            "type": "feeder"
+        })
+
+    # Step 2 — walk the corridor
+    d2 = corridor_stats["distanceInMiles"]
+    g2 = corridor_stats["avgGradePct"]
+    feel = "gentle and flat" if g2 < 4 else "mostly gentle" if g2 < 7 else "moderate"
+    steps.append({
+        "step": 2,
+        "instruction": f"Follow {corridor_name} for {d2:.2f}mi — {feel} ({g2}% avg grade).",
+        "distanceMiles": d2,
+        "gradePct": g2,
+        "type": "corridor"
+    })
+
+    # Step 3 — walk to destination
+    d3 = exit_stats["distanceInMiles"]
+    steps.append({
+        "step": 3,
+        "instruction": f"Leave {corridor_name} and walk {d3:.2f}mi to your destination.",
+        "distanceMiles": d3,
+        "gradePct": exit_stats["avgGradePct"],
+        "type": "exit"
+    })
+
+    return steps
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.route("/health", methods=["GET"])
 def health():
-    sample = []
-    for u, v, data in list(G.edges(data=True))[:5]:
-        sample.append({
-            "grade_abs": data.get("grade_abs"),
-            "impedance_gentle": data.get("impedance_gentle"),
-            "impedance_moderate": data.get("impedance_moderate")
-        })
-    return {"status": "ok", "version": "v9-smooth-impedance", "sample_edges": sample}
+    return {"status": "ok", "version": "corridors-v1"}
 
 
-@app.route("/route", methods=["GET"])
-def get_route():
+@app.route("/corridor_route", methods=["GET"])
+def corridor_route():
     try:
-        if request.args.get("start") and request.args.get("end"):
-            start_lat, start_lng = map(float, request.args.get("start").split(","))
-            end_lat, end_lng = map(float, request.args.get("end").split(","))
-        else:
-            start_lat = float(request.args.get("start_lat"))
-            start_lng = float(request.args.get("start_lng"))
-            end_lat = float(request.args.get("end_lat"))
-            end_lng = float(request.args.get("end_lng"))
+        start_lat = float(request.args.get("start_lat"))
+        start_lng = float(request.args.get("start_lng"))
+        end_lat   = float(request.args.get("end_lat"))
+        end_lng   = float(request.args.get("end_lng"))
 
-        origin = ox.distance.nearest_nodes(G, start_lng, start_lat)
+        origin      = ox.distance.nearest_nodes(G, start_lng, start_lat)
         destination = ox.distance.nearest_nodes(G, end_lng, end_lat)
 
-        # Straight-line distance — used for the 2x distance cap below
-        crow_flies_miles = straight_line_dist_miles(start_lat, start_lng, end_lat, end_lng)
+        crow_m = haversine((start_lat, start_lng), (end_lat, end_lng))
 
-        all_routes = []
+        # Direct route grade — baseline to beat
+        direct_path = ox.routing.shortest_path(G, origin, destination, weight="length")
+        direct_stats = path_stats(direct_path)
+        direct_grade = direct_stats["avgGradePct"] / 100
 
-        for weight in ["impedance_gentle", "impedance_moderate", "length"]:
-            r = ox.routing.shortest_path(G, origin, destination, weight=weight)
-            if r:
-                all_routes.append(analyze_route(r))
+        print(f"Direct route: {direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg")
 
-        # Corridor-based routing: sample N/S streets between origin and destination
-        # Route origin → corridor_waypoint → destination for each corridor
-        print("Running corridor-based routing...")
-        _t0 = _time.time()
-        orig_lng = G.nodes[origin]["x"]
-        dest_lng = G.nodes[destination]["x"]
-        orig_lat = G.nodes[origin]["y"]
-        dest_lat = G.nodes[destination]["y"]
-        mid_lat = orig_lat  # waypoint at origin latitude = corridor entry point
+        # Latitude band for corridor evaluation
+        lat_min = min(start_lat, end_lat) - 0.002
+        lat_max = max(start_lat, end_lat) + 0.002
+        lng_min = min(start_lng, end_lng) - 0.010
+        lng_max = max(start_lng, end_lng) + 0.010
 
-        # Sample corridors across the full longitude range plus small buffer
-        lng_min = min(orig_lng, dest_lng) - 0.006
-        lng_max = max(orig_lng, dest_lng) + 0.006
-        step = 0.0008
-        n_steps = int((lng_max - lng_min) / step) + 1
-        corridor_lngs = [lng_min + i * step for i in range(n_steps)]
+        # Score each corridor
+        scored = []
+        for corridor in CORRIDORS:
+            kw = corridor["keyword"]
 
-        seen_waypoints = set()
-        for corridor_lng in corridor_lngs:
-            try:
-                wp_north = ox.distance.nearest_nodes(G, corridor_lng, orig_lat)
-                wp_south = ox.distance.nearest_nodes(G, corridor_lng, dest_lat)
-                key = (wp_north, wp_south)
-                if key in seen_waypoints or wp_north == origin or wp_south == destination:
-                    continue
-                seen_waypoints.add(key)
-                path1 = ox.routing.shortest_path(G, origin, wp_north, weight="impedance_gentle")
-                path2 = ox.routing.shortest_path(G, wp_north, wp_south, weight="impedance_gentle")
-                path3 = ox.routing.shortest_path(G, wp_south, destination, weight="impedance_gentle")
-                if path1 and path2 and path3:
-                    full_path = path1 + path2[1:] + path3[1:]
-                    all_routes.append(analyze_route(full_path))
-            except Exception as e:
+            # Check corridor is geographically relevant
+            cor_grade = corridor_grade_in_band(kw, lat_min, lat_max)
+            if cor_grade is None:
+                continue  # corridor not present in this band
+
+            improvement = direct_grade - cor_grade
+            pct_easier  = (improvement / direct_grade * 100) if direct_grade > 0 else 0
+
+            if pct_easier < 10:
+                continue  # not worth suggesting
+
+            # Find entry and exit nodes on the corridor
+            entry_node = best_corridor_node(kw, start_lat, start_lng,
+                                            lat_band=lat_max-lat_min,
+                                            lng_band=lng_max-lng_min)
+            exit_node  = best_corridor_node(kw, end_lat, end_lng,
+                                            lat_band=lat_max-lat_min,
+                                            lng_band=lng_max-lng_min)
+
+            if entry_node is None or exit_node is None or entry_node == exit_node:
                 continue
-        print(f"[corridor] corridors={len(seen_waypoints)} elapsed={_time.time()-_t0:.1f}s")
 
-        print(f"📊 Before dedup: {len(all_routes)} routes")
-        for r in all_routes:
-            print(f"   {r['distanceInMiles']}mi avg={r['avgGradePct']}% max={r['maxGradePct']}%")
+            scored.append({
+                "corridor": corridor,
+                "cor_grade": cor_grade,
+                "pct_easier": pct_easier,
+                "entry_node": entry_node,
+                "exit_node": exit_node,
+            })
 
-        unique_routes = deduplicate_routes(all_routes)
-        print(f"📊 After dedup: {len(unique_routes)} routes")
-        unique_routes.sort(key=lambda r: r["_difficulty"])
+        scored.sort(key=lambda x: -x["pct_easier"])
 
-        if not unique_routes:
-            return jsonify({"error": "No routes found"}), 500
+        if not scored:
+            # No corridor found — fall back to direct route with a note
+            return jsonify({
+                "suggestion": "direct",
+                "message": "No significantly flatter corridor found for this trip.",
+                "directRoute": direct_stats,
+                "steps": [{
+                    "step": 1,
+                    "instruction": f"Walk directly to your destination ({direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg grade).",
+                    "distanceMiles": direct_stats["distanceInMiles"],
+                    "gradePct": direct_stats["avgGradePct"],
+                    "type": "direct"
+                }]
+            })
 
-        # CHANGE: 2x straight-line distance cap.
-        # Prevents the router picking an absurd detour just to avoid a moderate hill.
-        # Floor of 0.5mi so very short trips still get reasonable options.
-        max_allowed_miles = max(crow_flies_miles * 6.0, 1.5)
-        filtered = [r for r in unique_routes
-                    if r["distanceInMiles"] <= max_allowed_miles
-                    and r["maxGradePct"] <= 20.0]
+        best = scored[0]
+        entry_node = best["entry_node"]
+        exit_node  = best["exit_node"]
+        corridor_name = best["corridor"]["name"]
 
-        if not filtered:
-            print("⚠️ Distance cap filtered all routes, falling back to uncapped")
-            filtered = unique_routes
+        print(f"Best corridor: {corridor_name}, {best['pct_easier']:.0f}% easier")
 
-        for r in filtered:
-            r.pop("_difficulty", None)
+        # Route the 3 segments
+        feeder_path   = nx.dijkstra_path(G, origin, entry_node, weight="impedance")
+        corridor_path = nx.dijkstra_path(G, entry_node, exit_node, weight="impedance")
+        exit_path     = nx.dijkstra_path(G, exit_node, destination, weight="impedance")
 
-        flat = filtered[0]
-        short = min(filtered, key=lambda r: r["distanceInMiles"])
+        feeder_stats   = path_stats(feeder_path)
+        corridor_stats = path_stats(corridor_path)
+        exit_stats     = path_stats(exit_path)
 
-        print(f"✅ crow_flies={crow_flies_miles:.2f}mi cap={max_allowed_miles:.2f}mi")
-        print(f"✅ Returning {len(filtered)} routes, easiest: avg={filtered[0]['avgGradePct']}%, max={filtered[0]['maxGradePct']}%")
+        total_miles = (feeder_stats["distanceInMiles"] +
+                       corridor_stats["distanceInMiles"] +
+                       exit_stats["distanceInMiles"])
+
+        steps = generate_steps(feeder_stats, corridor_stats, exit_stats, corridor_name)
 
         return jsonify({
-            "flatRoute": flat,
-            "shortRoute": short,
-            "allRoutes": filtered[:6]
+            "suggestion": corridor_name,
+            "pctEasierThanDirect": round(best["pct_easier"], 0),
+            "totalDistanceMiles": round(total_miles, 2),
+            "corridorGradePct": round(best["cor_grade"] * 100, 1),
+            "directGradePct": direct_stats["avgGradePct"],
+            "feederRoute":   feeder_stats,
+            "corridorRoute": corridor_stats,
+            "exitRoute":     exit_stats,
+            "steps": steps,
         })
 
     except Exception as e:
