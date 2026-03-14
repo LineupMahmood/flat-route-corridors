@@ -104,7 +104,22 @@ for u, v, k, data in G.edges(keys=True, data=True):
     highway = str(data.get("highway", ""))
     if isinstance(highway, list):
         highway = highway[0] if highway else ""
-    arterial_penalty = 2.5 if (u in arterial_nodes or v in arterial_nodes) else 1.0
+    # Only penalize the edge if it is ITSELF on an arterial — not merely
+    # touching one at an intersection. This prevents Octavia from being
+    # contaminated by cross streets (Union, Broadway) that share nodes.
+    hw = data.get("highway", "")
+    if isinstance(hw, list):
+        hw = hw[0] if hw else ""
+    lanes_raw = data.get("lanes", "0")
+    try:
+        edge_lanes = int(str(lanes_raw).split(";")[0].strip())
+    except (ValueError, AttributeError):
+        edge_lanes = 0
+    is_arterial_edge = hw in ARTERIAL_HIGHWAY or edge_lanes >= 3
+    # Secondary penalty: both endpoints on arterials (e.g. a service road
+    # sandwiched between two primary roads like Van Ness busway lanes)
+    both_arterial = (u in arterial_nodes and v in arterial_nodes)
+    arterial_penalty = 2.5 if (is_arterial_edge or both_arterial) else 1.0
     data["impedance_gentle"]   = length * arterial_penalty * (1 + K_GENTLE   * excess ** 2)
     data["impedance_moderate"] = length * arterial_penalty * (1 + K_MODERATE * excess ** 2)
 print("Weights ready.")
