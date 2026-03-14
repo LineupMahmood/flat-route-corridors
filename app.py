@@ -75,18 +75,38 @@ print("Computing edge weights...")
 COMFORT_GRADE = 0.02
 K_GENTLE   = 1500
 K_MODERATE = 600
+
+# Build arterial node set: any node that touches a primary/trunk road
+# or a road with 3+ lanes is "contaminated" — footways sharing these
+# nodes are penalized as unpleasant walking corridors (e.g. Van Ness).
+# Octavia has no primary edges and 1-2 lane service roads → unaffected.
+ARTERIAL_HIGHWAY = {"primary", "trunk", "motorway"}
+arterial_nodes = set()
+for u, v, data in G.edges(data=True):
+    hw = data.get("highway", "")
+    if isinstance(hw, list):
+        hw = hw[0] if hw else ""
+    lanes_raw = data.get("lanes", "0")
+    try:
+        lanes = int(str(lanes_raw).split(";")[0].strip())
+    except (ValueError, AttributeError):
+        lanes = 0
+    if hw in ARTERIAL_HIGHWAY or lanes >= 3:
+        arterial_nodes.add(u)
+        arterial_nodes.add(v)
+
+print(f"Arterial node set: {len(arterial_nodes)} nodes")
+
 for u, v, k, data in G.edges(keys=True, data=True):
     grade = float(data.get("grade_abs", 0))
     length = float(data.get("length", 0))
     excess = max(0.0, grade - COMFORT_GRADE)
     highway = str(data.get("highway", ""))
-    # Penalize unpleasant walking streets (major roads, highways)
     if isinstance(highway, list):
         highway = highway[0] if highway else ""
-    # Geographic exclusion: penalize Van Ness corridor heavily
-    road_penalty = 1.0
-    data["impedance_gentle"]   = length * road_penalty * (1 + K_GENTLE   * excess ** 2)
-    data["impedance_moderate"] = length * road_penalty * (1 + K_MODERATE * excess ** 2)
+    arterial_penalty = 2.5 if (u in arterial_nodes or v in arterial_nodes) else 1.0
+    data["impedance_gentle"]   = length * arterial_penalty * (1 + K_GENTLE   * excess ** 2)
+    data["impedance_moderate"] = length * arterial_penalty * (1 + K_MODERATE * excess ** 2)
 print("Weights ready.")
 
 print("Network ready. Server starting...")
