@@ -242,6 +242,15 @@ def corridor_route():
             if entry_node is None or exit_node is None or entry_node == exit_node:
                 continue
 
+            # Reject if corridor segment would be trivially short (<0.2mi)
+            # This filters out cases where destination IS on the corridor
+            entry_coords = (G.nodes[entry_node]["y"], G.nodes[entry_node]["x"])
+            exit_coords  = (G.nodes[exit_node]["y"],  G.nodes[exit_node]["x"])
+            corridor_span = haversine(entry_coords, exit_coords)
+            if corridor_span < 300:  # 300m ~ 0.2mi minimum
+                print(f"Skipping {corridor['name']} — corridor span too short ({corridor_span:.0f}m)")
+                continue
+
             # Reject corridors that create excessive detour
             # Feeder + exit distance must not exceed 2x crow-flies
             entry_coords = (G.nodes[entry_node]["y"], G.nodes[entry_node]["x"])
