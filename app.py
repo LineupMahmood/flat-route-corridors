@@ -105,6 +105,16 @@ def discover_corridors(start_lat, start_lng, end_lat, end_lng):
         if not name or len(name) < 4:
             continue
 
+        # Filter out non-walking infrastructure
+        name_lower = name.lower()
+        skip_patterns = [
+            "bus rapid transit", "brt", "freeway", "highway", "hwy",
+            "ramp", "offramp", "onramp", "i-", "us-", "ca-",
+            "expressway", "overpass", "underpass", "tunnel"
+        ]
+        if any(p in name_lower for p in skip_patterns):
+            continue
+
         name_key = name.lower()
         grade  = float(data.get("grade_abs", 0))
         length = float(data.get("length", 0))
@@ -277,6 +287,11 @@ def corridor_route():
             # Reject if feeder alone is longer than half the total trip
             if feeder_dist > crow_m * 0.5:
                 print(f"  Skip {c['name']} — feeder too long ({feeder_dist:.0f}m vs {crow_m:.0f}m trip)")
+                continue
+
+            # Reject if exit alone is longer than half the total trip
+            if exit_dist > crow_m * 0.5:
+                print(f"  Skip {c['name']} — exit too long ({exit_dist:.0f}m vs {crow_m:.0f}m trip)")
                 continue
 
             detour_ratio = (feeder_dist + exit_dist) / crow_m
