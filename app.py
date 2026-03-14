@@ -243,6 +243,16 @@ def corridor_route():
             if entry_node is None or exit_node is None or entry_node == exit_node:
                 continue
 
+            # Reject corridors that create excessive detour
+            # Feeder + exit distance must not exceed 2x crow-flies
+            entry_coords = (G.nodes[entry_node]["y"], G.nodes[entry_node]["x"])
+            exit_coords  = (G.nodes[exit_node]["y"],  G.nodes[exit_node]["x"])
+            feeder_dist  = haversine((start_lat, start_lng), entry_coords)
+            exit_dist    = haversine((end_lat, end_lng), exit_coords)
+            if feeder_dist + exit_dist > 2.5 * crow_m:
+                print(f"Skipping {corridor['name']} — too much detour ({(feeder_dist+exit_dist)/crow_m:.1f}x crow-flies)")
+                continue
+
             scored.append({
                 "corridor": corridor,
                 "cor_grade": cor_grade,
