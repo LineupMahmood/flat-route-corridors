@@ -1,4 +1,4 @@
-import os, gzip, math, time as _time, urllib.request, pickle
+import os, gzip, math, urllib.request, pickle
 import osmnx as ox
 import networkx as nx
 from flask import Flask, request, jsonify
@@ -39,23 +39,6 @@ for u, v, k, data in G.edges(keys=True, data=True):
     data["impedance"] = length * (1 + K * excess ** 2)
 print("Ready.")
 
-# ── Corridors ─────────────────────────────────────────────────────────────────
-# Each corridor defines a flat section of SF by lat band + lng range.
-# Segments are evaluated only within the band relevant to the user's trip.
-CORRIDORS = [
-    {"name": "Octavia Blvd",    "keyword": "octavia",   "direction": "N-S"},
-    {"name": "Valencia Street", "keyword": "valencia",  "direction": "N-S"},
-    {"name": "Mission Street",  "keyword": "mission",   "direction": "N-S"},
-    {"name": "The Embarcadero", "keyword": "embarcadero","direction": "N-S"},
-    {"name": "Market Street",   "keyword": "market",    "direction": "NE-SW"},
-    {"name": "Columbus Avenue", "keyword": "columbus",  "direction": "NE-SW"},
-    {"name": "Fell Street",     "keyword": "fell",      "direction": "E-W"},
-    {"name": "Broadway",        "keyword": "broadway",  "direction": "E-W"},
-    {"name": "Brannan Street",  "keyword": "brannan",   "direction": "E-W"},
-    {"name": "King Street",     "keyword": "king",      "direction": "E-W"},
-    {"name": "Beach Street",    "keyword": "beach",     "direction": "E-W"},
-    {"name": "Bay Street",      "keyword": "bay",       "direction": "E-W"},
-]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -64,12 +47,13 @@ def haversine(a, b):
     dlng = (a[1] - b[1]) * 111000 * math.cos(math.radians(a[0]))
     return math.sqrt(dlat**2 + dlng**2)
 
+
 def path_stats(path):
     total_length = 0
     grades = []
     coords = []
     for i in range(len(path) - 1):
-        u, v = path[i], path[i+1]
+        u, v = path[i], path[i + 1]
         ed = G.get_edge_data(u, v)
         if ed:
             edge = min(ed.values(), key=lambda d: float(d.get("grade_abs", 99)))
@@ -86,99 +70,136 @@ def path_stats(path):
         "maxGradePct": round(max_grade * 100, 1),
     }
 
-def best_corridor_node(keyword, target_lat, target_lng, lat_band=0.006, lng_band=0.006):
-    """
-    Find the node on a named corridor closest to (target_lat, target_lng).
-    Only considers nodes that sit on edges named with the keyword.
-    Returns the flattest such node within the band.
-    """
-    lat_min = target_lat - lat_band
-    lat_max = target_lat + lat_band
-    lng_min = target_lng - lng_band
-    lng_max = target_lng + lng_band
 
-    candidate_nodes = set()
+def discover_corridors(start_lat, start_lng, end_lat, end_lng):
+    """
+    Scan every edge in the trip bounding box.
+    Group by street name, compute length-weighted average grade,
+    and return all named streets with enough span to be useful corridors.
+    No hardcoded list — purely data-driven.
+    """
+    LAT_PAD = 0.006
+    LNG_PAD = 0.015
+    MIN_SPAN_M = 350     # corridor must be at least 350m long in this band
+    MIN_EDGES  = 4       # need at least 4 edges to be a real street segment
+
+    lat_min = min(start_lat, end_lat) - LAT_PAD
+    lat_max = max(start_lat, end_lat) + LAT_PAD
+    lng_min = min(start_lng, end_lng) - LNG_PAD
+    lng_max = max(start_lng, end_lng) + LNG_PAD
+
+    streets = {}  # name_key -> dict
+
     for u, v, data in G.edges(data=True):
+        nu, nv = G.nodes[u], G.nodes[v]
+        mid_lat = (nu["y"] + nv["y"]) / 2
+        mid_lng = (nu["x"] + nv["x"]) / 2
+
+        if not (lat_min < mid_lat < lat_max and lng_min < mid_lng < lng_max):
+            continue
+
         name = data.get("name", "")
         if isinstance(name, list):
             name = name[0] if name else ""
-        if keyword not in name.lower():
+        name = name.strip()
+        if not name or len(name) < 4:
             continue
-        for node in [u, v]:
-            nx_ = G.nodes[node]["x"]
-            ny_ = G.nodes[node]["y"]
-            if lat_min < ny_ < lat_max and lng_min < nx_ < lng_max:
-                candidate_nodes.add(node)
 
-    if not candidate_nodes:
-        return None
+        name_key = name.lower()
+        grade  = float(data.get("grade_abs", 0))
+        length = float(data.get("length", 0))
 
-    # Pick the node closest to the target point
-    def dist_to_target(n):
-        return haversine((G.nodes[n]["y"], G.nodes[n]["x"]),
-                         (target_lat, target_lng))
+        if name_key not in streets:
+            streets[name_key] = {
+                "name": name,
+                "grades": [],
+                "lengths": [],
+                "nodes": set(),
+                "lats": [],
+                "lngs": [],
+            }
 
-    return min(candidate_nodes, key=dist_to_target)
+        s = streets[name_key]
+        s["grades"].append(grade)
+        s["lengths"].append(length)
+        s["nodes"].update([u, v])
+        s["lats"].extend([nu["y"], nv["y"]])
+        s["lngs"].extend([nu["x"], nv["x"]])
 
-def corridor_grade_in_band(keyword, lat_min, lat_max):
-    """Average grade of corridor edges within a latitude band."""
-    grades = []
-    for u, v, data in G.edges(data=True):
-        name = data.get("name", "")
-        if isinstance(name, list):
-            name = name[0] if name else ""
-        if keyword not in name.lower():
+    candidates = []
+    for name_key, s in streets.items():
+        if len(s["grades"]) < MIN_EDGES:
             continue
-        mid_lat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2
-        if lat_min < mid_lat < lat_max:
-            grades.append(float(data.get("grade_abs", 0)))
-    return sum(grades) / len(grades) if grades else None
+
+        total_length = sum(s["lengths"])
+        if total_length < MIN_SPAN_M:
+            continue
+
+        # Length-weighted average grade — the core scoring metric
+        avg_grade = sum(g * l for g, l in zip(s["grades"], s["lengths"])) / total_length
+
+        # Geographic span of this street within the band
+        lats, lngs = s["lats"], s["lngs"]
+        avg_lat = sum(lats) / len(lats)
+        lat_span_m = (max(lats) - min(lats)) * 111000
+        lng_span_m = (max(lngs) - min(lngs)) * 111000 * math.cos(math.radians(avg_lat))
+        span_m = math.sqrt(lat_span_m**2 + lng_span_m**2)
+
+        if span_m < MIN_SPAN_M:
+            continue
+
+        candidates.append({
+            "name": s["name"],
+            "avg_grade": avg_grade,
+            "total_length_m": total_length,
+            "span_m": span_m,
+            "nodes": s["nodes"],
+        })
+
+    print(f"  Discovered {len(candidates)} candidate corridors in bounding box")
+    return candidates
+
+
+def best_node_near(nodes, target_lat, target_lng):
+    """Return the node in `nodes` closest to the target coordinate."""
+    return min(
+        nodes,
+        key=lambda n: haversine(
+            (G.nodes[n]["y"], G.nodes[n]["x"]),
+            (target_lat, target_lng)
+        )
+    )
+
 
 def generate_steps(feeder_stats, corridor_stats, exit_stats, corridor_name):
-    """Generate 3 plain-English step cards."""
     steps = []
-
-    # Step 1 — walk to corridor
     d1 = feeder_stats["distanceInMiles"]
     if d1 < 0.05:
         steps.append({
             "step": 1,
             "instruction": f"You're already near {corridor_name}. Head onto it.",
-            "distanceMiles": d1,
-            "gradePct": feeder_stats["avgGradePct"],
-            "type": "feeder"
+            "distanceMiles": d1, "gradePct": feeder_stats["avgGradePct"], "type": "feeder"
         })
     else:
         steps.append({
             "step": 1,
             "instruction": f"Walk {d1:.2f}mi to reach {corridor_name}.",
-            "distanceMiles": d1,
-            "gradePct": feeder_stats["avgGradePct"],
-            "type": "feeder"
+            "distanceMiles": d1, "gradePct": feeder_stats["avgGradePct"], "type": "feeder"
         })
-
-    # Step 2 — walk the corridor
     d2 = corridor_stats["distanceInMiles"]
     g2 = corridor_stats["avgGradePct"]
     feel = "gentle and flat" if g2 < 4 else "mostly gentle" if g2 < 7 else "moderate"
     steps.append({
         "step": 2,
         "instruction": f"Follow {corridor_name} for {d2:.2f}mi — {feel} ({g2}% avg grade).",
-        "distanceMiles": d2,
-        "gradePct": g2,
-        "type": "corridor"
+        "distanceMiles": d2, "gradePct": g2, "type": "corridor"
     })
-
-    # Step 3 — walk to destination
     d3 = exit_stats["distanceInMiles"]
     steps.append({
         "step": 3,
         "instruction": f"Leave {corridor_name} and walk {d3:.2f}mi to your destination.",
-        "distanceMiles": d3,
-        "gradePct": exit_stats["avgGradePct"],
-        "type": "exit"
+        "distanceMiles": d3, "gradePct": exit_stats["avgGradePct"], "type": "exit"
     })
-
     return steps
 
 
@@ -186,7 +207,7 @@ def generate_steps(feeder_stats, corridor_stats, exit_stats, corridor_name):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "version": "corridors-v1"}
+    return {"status": "ok", "version": "corridors-v2-dynamic"}
 
 
 @app.route("/corridor_route", methods=["GET"])
@@ -198,23 +219,22 @@ def corridor_route():
         end_lng   = float(request.args.get("end_lng"))
 
         origin      = ox.distance.nearest_nodes(G, start_lng, start_lat)
-        destination = ox.distance.nearest_nodes(G, end_lng, end_lat)
+        destination = ox.distance.nearest_nodes(G, end_lng,   end_lat)
+        crow_m      = haversine((start_lat, start_lng), (end_lat, end_lng))
 
-        crow_m = haversine((start_lat, start_lng), (end_lat, end_lng))
-
-        # Direct route grade — baseline to beat
-        direct_path = ox.routing.shortest_path(G, origin, destination, weight="length")
+        # ── Baseline: direct route ─────────────────────────────────────────
+        direct_path  = ox.routing.shortest_path(G, origin, destination, weight="length")
         direct_stats = path_stats(direct_path)
         direct_grade = direct_stats["avgGradePct"] / 100
 
-        print(f"Direct route: {direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg")
+        print(f"Direct: {direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg")
 
-        # If direct route is already gentle, no corridor needed
         if direct_grade < 0.04:
             return jsonify({
                 "suggestion": "direct",
                 "message": "Your direct route is already gentle — no detour needed.",
                 "directRoute": direct_stats,
+                "totalDistanceMiles": direct_stats["distanceInMiles"],
                 "steps": [{
                     "step": 1,
                     "instruction": f"Walk directly to your destination — already a gentle route ({direct_stats['avgGradePct']}% avg grade).",
@@ -224,74 +244,63 @@ def corridor_route():
                 }]
             })
 
-        # Latitude band for corridor evaluation
-        lat_min = min(start_lat, end_lat) - 0.002
-        lat_max = max(start_lat, end_lat) + 0.002
-        lng_min = min(start_lng, end_lng) - 0.010
-        lng_max = max(start_lng, end_lng) + 0.010
+        # ── Discover every named street in the bounding box ────────────────
+        candidates = discover_corridors(start_lat, start_lng, end_lat, end_lng)
 
-        # Score each corridor
         scored = []
-        for corridor in CORRIDORS:
-            kw = corridor["keyword"]
-
-            # Check corridor is geographically relevant
-            cor_grade = corridor_grade_in_band(kw, lat_min, lat_max)
-            if cor_grade is None:
-                continue  # corridor not present in this band
-
-            improvement = direct_grade - cor_grade
-            pct_easier  = (improvement / direct_grade * 100) if direct_grade > 0 else 0
+        for c in candidates:
+            # How much flatter is this street vs the direct route?
+            improvement  = direct_grade - c["avg_grade"]
+            pct_easier   = (improvement / direct_grade * 100) if direct_grade > 0 else 0
 
             if pct_easier < 10:
-                continue  # not worth suggesting
+                continue  # not meaningfully flatter
 
-            # Find entry and exit nodes on the corridor
-            entry_node = best_corridor_node(kw, start_lat, start_lng,
-                                            lat_band=lat_max-lat_min,
-                                            lng_band=lng_max-lng_min)
-            exit_node  = best_corridor_node(kw, end_lat, end_lng,
-                                            lat_band=lat_max-lat_min,
-                                            lng_band=lng_max-lng_min)
+            # Find the closest entry/exit nodes on this street
+            entry_node = best_node_near(c["nodes"], start_lat, start_lng)
+            exit_node  = best_node_near(c["nodes"], end_lat,   end_lng)
 
             if entry_node is None or exit_node is None or entry_node == exit_node:
                 continue
 
-            # Reject if corridor segment would be trivially short (<0.2mi)
-            # This filters out cases where destination IS on the corridor
+            # Corridor must have enough span between entry and exit
             entry_coords = (G.nodes[entry_node]["y"], G.nodes[entry_node]["x"])
             exit_coords  = (G.nodes[exit_node]["y"],  G.nodes[exit_node]["x"])
-            corridor_span = haversine(entry_coords, exit_coords)
-            if corridor_span < 300:  # 300m ~ 0.2mi minimum
-                print(f"Skipping {corridor['name']} — corridor span too short ({corridor_span:.0f}m)")
+            corridor_span_m = haversine(entry_coords, exit_coords)
+            if corridor_span_m < 300:
+                print(f"  Skip {c['name']} — corridor span too short ({corridor_span_m:.0f}m)")
                 continue
 
-            # Reject corridors that create excessive detour
-            # Feeder + exit distance must not exceed 2x crow-flies
-            entry_coords = (G.nodes[entry_node]["y"], G.nodes[entry_node]["x"])
-            exit_coords  = (G.nodes[exit_node]["y"],  G.nodes[exit_node]["x"])
-            feeder_dist  = haversine((start_lat, start_lng), entry_coords)
-            exit_dist    = haversine((end_lat, end_lng), exit_coords)
+            # Reject if the detour is wildly out of the way
+            feeder_dist = haversine((start_lat, start_lng), entry_coords)
+            exit_dist   = haversine((end_lat,   end_lng),   exit_coords)
             if feeder_dist + exit_dist > 2.5 * crow_m:
-                print(f"Skipping {corridor['name']} — too much detour ({(feeder_dist+exit_dist)/crow_m:.1f}x crow-flies)")
+                print(f"  Skip {c['name']} — too much detour ({(feeder_dist+exit_dist)/crow_m:.1f}x)")
                 continue
+
+            # Score = grade improvement, weighted slightly by span
+            # A longer flat corridor is more useful than a short one
+            span_bonus = min(c["span_m"] / 1000, 1.0)  # caps at 1.0 for 1km+
+            score = pct_easier * (1 + 0.1 * span_bonus)
 
             scored.append({
-                "corridor": corridor,
-                "cor_grade": cor_grade,
+                "name": c["name"],
+                "avg_grade": c["avg_grade"],
                 "pct_easier": pct_easier,
+                "score": score,
                 "entry_node": entry_node,
                 "exit_node": exit_node,
             })
+            print(f"  {c['name']}: {pct_easier:.1f}% easier, score={score:.1f}")
 
-        scored.sort(key=lambda x: -x["pct_easier"])
+        scored.sort(key=lambda x: -x["score"])
 
         if not scored:
-            # No corridor found — fall back to direct route with a note
             return jsonify({
                 "suggestion": "direct",
-                "message": "No significantly flatter corridor found for this trip.",
+                "message": "No significantly flatter street found for this trip.",
                 "directRoute": direct_stats,
+                "totalDistanceMiles": direct_stats["distanceInMiles"],
                 "steps": [{
                     "step": 1,
                     "instruction": f"Walk directly to your destination ({direct_stats['distanceInMiles']}mi, {direct_stats['avgGradePct']}% avg grade).",
@@ -302,16 +311,16 @@ def corridor_route():
             })
 
         best = scored[0]
-        entry_node = best["entry_node"]
-        exit_node  = best["exit_node"]
-        corridor_name = best["corridor"]["name"]
+        corridor_name = best["name"]
+        entry_node    = best["entry_node"]
+        exit_node     = best["exit_node"]
 
-        print(f"Best corridor: {corridor_name}, {best['pct_easier']:.0f}% easier")
+        print(f"Winner: {corridor_name} — {best['pct_easier']:.0f}% easier than direct")
 
-        # Route the 3 segments
-        feeder_path   = nx.dijkstra_path(G, origin, entry_node, weight="impedance")
-        corridor_path = nx.dijkstra_path(G, entry_node, exit_node, weight="impedance")
-        exit_path     = nx.dijkstra_path(G, exit_node, destination, weight="impedance")
+        # ── Route the 3 segments ───────────────────────────────────────────
+        feeder_path   = nx.dijkstra_path(G, origin,      entry_node,  weight="impedance")
+        corridor_path = nx.dijkstra_path(G, entry_node,  exit_node,   weight="impedance")
+        exit_path     = nx.dijkstra_path(G, exit_node,   destination, weight="impedance")
 
         feeder_stats   = path_stats(feeder_path)
         corridor_stats = path_stats(corridor_path)
@@ -327,7 +336,7 @@ def corridor_route():
             "suggestion": corridor_name,
             "pctEasierThanDirect": round(best["pct_easier"], 0),
             "totalDistanceMiles": round(total_miles, 2),
-            "corridorGradePct": round(best["cor_grade"] * 100, 1),
+            "corridorGradePct": round(best["avg_grade"] * 100, 1),
             "directGradePct": direct_stats["avgGradePct"],
             "feederRoute":   feeder_stats,
             "corridorRoute": corridor_stats,
