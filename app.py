@@ -105,14 +105,17 @@ def discover_corridors(start_lat, start_lng, end_lat, end_lng):
         if not name or len(name) < 4:
             continue
 
-        # Filter out non-walking infrastructure
-        name_lower = name.lower()
-        skip_patterns = [
-            "bus rapid transit", "brt", "freeway", "highway", "hwy",
-            "ramp", "offramp", "onramp", "i-", "us-", "ca-",
-            "expressway", "overpass", "underpass", "tunnel"
-        ]
-        if any(p in name_lower for p in skip_patterns):
+        # Only include edges that are walkable by OSM highway classification
+        highway = data.get("highway", "")
+        if isinstance(highway, list):
+            highway = highway[0] if highway else ""
+        walkable = {
+            "residential", "living_street", "pedestrian", "footway",
+            "path", "track", "unclassified", "tertiary", "tertiary_link",
+            "secondary", "secondary_link", "primary", "primary_link",
+            "service", "steps", "corridor"
+        }
+        if highway not in walkable:
             continue
 
         name_key = name.lower()
