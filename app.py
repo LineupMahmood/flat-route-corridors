@@ -76,6 +76,16 @@ def haversine(a, b):
     return math.sqrt(dlat**2 + dlng**2)
 
 
+def get_subgraph(start_lat, start_lng, end_lat, end_lng, pad=0.015):
+    lat_min = min(start_lat, end_lat) - pad
+    lat_max = max(start_lat, end_lat) + pad
+    lng_min = min(start_lng, end_lng) - pad
+    lng_max = max(start_lng, end_lng) + pad
+    nodes = [n for n, d in G.nodes(data=True)
+             if lat_min <= d["y"] <= lat_max and lng_min <= d["x"] <= lng_max]
+    return G.subgraph(nodes)
+
+
 def analyze_route(path):
     total_length = 0
     total_gain = 0
@@ -121,15 +131,18 @@ def get_route():
         end_lat   = float(request.args.get("end_lat"))
         end_lng   = float(request.args.get("end_lng"))
 
-        origin      = ox.distance.nearest_nodes(G, start_lng, start_lat)
-        destination = ox.distance.nearest_nodes(G, end_lng,   end_lat)
         crow_miles  = haversine((start_lat, start_lng), (end_lat, end_lng)) / 1609.34
-
         print(f"Trip: ({start_lat},{start_lng}) → ({end_lat},{end_lng}), crow={crow_miles:.2f}mi")
+
+        SG = get_subgraph(start_lat, start_lng, end_lat, end_lng)
+        print(f"Subgraph: {SG.number_of_nodes()} nodes, {SG.number_of_edges()} edges")
+
+        origin      = ox.distance.nearest_nodes(SG, start_lng, start_lat)
+        destination = ox.distance.nearest_nodes(SG, end_lng,   end_lat)
 
         routes = []
         for weight in ["impedance", "length"]:
-            path = ox.routing.shortest_path(G, origin, destination, weight=weight)
+            path = ox.routing.shortest_path(SG, origin, destination, weight=weight)
             if path:
                 stats = analyze_route(path)
                 print(f"  [{weight}] {stats['distanceInMiles']}mi avg={stats['avgGradePct']}% max={stats['maxGradePct']}%")
