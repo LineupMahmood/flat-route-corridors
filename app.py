@@ -137,17 +137,22 @@ def get_route():
         SG = get_subgraph(start_lat, start_lng, end_lat, end_lng)
         print(f"Subgraph: {SG.number_of_nodes()} nodes, {SG.number_of_edges()} edges")
 
-        origin      = ox.distance.nearest_nodes(SG, start_lng, start_lat)
-        destination = ox.distance.nearest_nodes(SG, end_lng,   end_lat)
+        
+        routes = []
+        def heuristic(u, v):
+            u_data, v_data = G.nodes[u], G.nodes[v]
+            return haversine((u_data["y"], u_data["x"]), (v_data["y"], v_data["x"]))
 
         routes = []
         for weight in ["impedance", "length"]:
-            path = ox.routing.shortest_path(SG, origin, destination, weight=weight)
-            if path:
-                stats = analyze_route(path)
-                print(f"  [{weight}] {stats['distanceInMiles']}mi avg={stats['avgGradePct']}% max={stats['maxGradePct']}%")
-                routes.append(stats)
-
+            try:
+                path = nx.astar_path(G, origin, destination, heuristic=heuristic, weight=weight)
+                if path:
+                    stats = analyze_route(path)
+                    print(f"  [{weight}] {stats['distanceInMiles']}mi avg={stats['avgGradePct']}% max={stats['maxGradePct']}%")
+                    routes.append(stats)
+            except Exception as e:
+                print(f"  [{weight}] failed: {e}")
         if not routes:
             return jsonify({"error": "No routes found"}), 500
 
