@@ -88,7 +88,7 @@ def get_subgraph(start_lat, start_lng, end_lat, end_lng, pad=0.02):
     lng_max = max(start_lng, end_lng) + pad
     nodes = [n for n, (lat, lng) in NODE_POSITIONS.items()
              if lat_min <= lat <= lat_max and lng_min <= lng <= lng_max]
-    return G.subgraph(nodes)
+    return G.subgraph(nodes).copy()
 
 
 def distance_budget(baseline_miles, crow_miles):
@@ -165,7 +165,7 @@ def get_route():
         destination = ox.distance.nearest_nodes(SG, end_lng,   end_lat)
 
         # ── Step 1: Shortest route (baseline) ─────────────────────────────
-        short_path = ox.routing.shortest_path(SG, origin, destination, weight="length")
+        short_path = nx.dijkstra_path(SG, origin, destination, weight="length")
         if not short_path:
             return jsonify({"error": "No route found"}), 500
 
@@ -177,7 +177,7 @@ def get_route():
         print(f"Flat budget: {budget_miles:.2f}mi")
 
         # ── Step 2: Flattest route ─────────────────────────────────────────
-        flat_path = ox.routing.shortest_path(SG, origin, destination, weight="impedance")
+        flat_path = nx.dijkstra_path(SG, origin, destination, weight="impedance")
         if not flat_path:
             return jsonify({
                 "singleRoute": short_stats,
