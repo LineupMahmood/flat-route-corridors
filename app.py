@@ -68,6 +68,9 @@ for u, v, k, data in G.edges(keys=True, data=True):
     data["impedance"] = length * arterial_penalty * (1 + K * excess ** 2)
 
 print("Ready.")
+print("Building spatial index...")
+NODE_POSITIONS = {n: (data["y"], data["x"]) for n, data in G.nodes(data=True)}
+print(f"Spatial index built: {len(NODE_POSITIONS)} nodes")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -83,7 +86,9 @@ def get_subgraph(start_lat, start_lng, end_lat, end_lng, pad=0.02):
     lat_max = max(start_lat, end_lat) + pad
     lng_min = min(start_lng, end_lng) - pad
     lng_max = max(start_lng, end_lng) + pad
-    return ox.truncate.truncate_graph_bbox(G, lat_max, lat_min, lng_max, lng_min)
+    nodes = [n for n, (lat, lng) in NODE_POSITIONS.items()
+             if lat_min <= lat <= lat_max and lng_min <= lng <= lng_max]
+    return G.subgraph(nodes)
 
 
 def distance_budget(baseline_miles, crow_miles):
