@@ -17,7 +17,7 @@ if not os.path.exists(GRAPHML_PATH):
             f_out.write(f_in.read())
     os.remove(gz_path)
 
-PICKLE_PATH = "sf_walk_v10.pkl"
+PICKLE_PATH = "sf_walk_v11.pkl"
 print("Loading graph...")
 if os.path.exists(PICKLE_PATH):
     with open(PICKLE_PATH, "rb") as f:
@@ -70,30 +70,39 @@ for u, v, k, data in G.edges(keys=True, data=True):
 print("Ready.")
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def haversine(a, b):
     dlat = (a[0] - b[0]) * 111000
     dlng = (a[1] - b[1]) * 111000 * math.cos(math.radians(a[0]))
     return math.sqrt(dlat**2 + dlng**2)
 
 
-def get_subgraph(start_lat, start_lng, end_lat, end_lng, pad=0.015):
+def get_subgraph(start_lat, start_lng, end_lat, end_lng, pad=0.02):
     lat_min = min(start_lat, end_lat) - pad
     lat_max = max(start_lat, end_lat) + pad
     lng_min = min(start_lng, end_lng) - pad
     lng_max = max(start_lng, end_lng) + pad
-    nodes = [n for n, d in G.nodes(data=True)
-             if lat_min <= d["y"] <= lat_max and lng_min <= d["x"] <= lng_max]
-    return G.subgraph(nodes)
+    return ox.truncate.truncate_graph_bbox(G, lat_max, lat_min, lng_max, lng_min)
 
 
-def analyze_route(path):
+def distance_budget(baseline_miles, crow_miles):
+    """
+    Scale the flat-route distance tolerance based on trip length.
+    Short trips get more flexibility, long trips floor at 25%.
+    """
+    extra = max(0.0, (1.0 - crow_miles) * 0.25)
+    return baseline_miles * (1.25 + extra)
+
+
+def analyze_route(path, graph):
     total_length = 0
     total_gain = 0
     grades = []
     coords = []
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
-        ed = G.get_edge_data(u, v)
+        ed = graph.get_edge_data(u, v)
         if ed:
             edge = min(ed.values(), key=lambda d: float(d.get("grade_abs", 99)))
             length = float(edge.get("length", 0))
@@ -105,22 +114,27 @@ def analyze_route(path):
             if length > 0:
                 grades.append(grade_abs)
     for node in path:
-        coords.append({"lat": G.nodes[node]["y"], "lng": G.nodes[node]["x"]})
+        coords.append({
+            "lat": graph.nodes[node]["y"],
+            "lng": graph.nodes[node]["x"]
+        })
     avg_grade = sum(grades) / len(grades) if grades else 0
     max_grade = max(grades) if grades else 0
+    distance_miles = round(total_length / 1609.34, 2)
     return {
         "coordinates": coords,
-        "distanceInMiles": round(total_length / 1609.34, 2),
+        "distanceInMiles": distance_miles,
         "elevationGainFt": round(total_gain * 3.281, 1),
         "avgGradePct": round(avg_grade * 100, 1),
         "maxGradePct": round(max_grade * 100, 1),
-        "_difficulty": avg_grade * 0.7 + max_grade * 0.3 + (total_length / 1609.34) * 0.01
     }
 
 
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.route("/health")
 def health():
-    return {"status": "ok", "version": "v10-clean-dijkstra"}
+    return {"status": "ok", "version": "v11-distance-constrained"}
 
 
 @app.route("/route")
@@ -131,48 +145,70 @@ def get_route():
         end_lat   = float(request.args.get("end_lat"))
         end_lng   = float(request.args.get("end_lng"))
 
-        crow_miles  = haversine((start_lat, start_lng), (end_lat, end_lng)) / 1609.34
+        crow_miles = haversine(
+            (start_lat, start_lng),
+            (end_lat, end_lng)
+        ) / 1609.34
+
         print(f"Trip: ({start_lat},{start_lng}) → ({end_lat},{end_lng}), crow={crow_miles:.2f}mi")
 
+        # ── Extract local subgraph ─────────────────────────────────────────
         SG = get_subgraph(start_lat, start_lng, end_lat, end_lng)
         print(f"Subgraph: {SG.number_of_nodes()} nodes, {SG.number_of_edges()} edges")
 
-        
-        routes = []
-        def heuristic(u, v):
-            u_data, v_data = G.nodes[u], G.nodes[v]
-            return haversine((u_data["y"], u_data["x"]), (v_data["y"], v_data["x"]))
+        origin      = ox.distance.nearest_nodes(SG, start_lng, start_lat)
+        destination = ox.distance.nearest_nodes(SG, end_lng,   end_lat)
 
-        routes = []
-        for weight in ["impedance", "length"]:
-            try:
-                path = nx.astar_path(G, origin, destination, heuristic=heuristic, weight=weight)
-                if path:
-                    stats = analyze_route(path)
-                    print(f"  [{weight}] {stats['distanceInMiles']}mi avg={stats['avgGradePct']}% max={stats['maxGradePct']}%")
-                    routes.append(stats)
-            except Exception as e:
-                print(f"  [{weight}] failed: {e}")
-        if not routes:
-            return jsonify({"error": "No routes found"}), 500
+        # ── Step 1: Shortest route (baseline) ─────────────────────────────
+        short_path = ox.routing.shortest_path(SG, origin, destination, weight="length")
+        if not short_path:
+            return jsonify({"error": "No route found"}), 500
 
-        routes.sort(key=lambda r: r["_difficulty"])
-        max_miles = max(crow_miles * 3.0, 1.5)
-        filtered = [r for r in routes if r["distanceInMiles"] <= max_miles]
-        if not filtered:
-            filtered = routes
+        short_stats = analyze_route(short_path, SG)
+        baseline_miles = short_stats["distanceInMiles"]
+        budget_miles   = distance_budget(baseline_miles, crow_miles)
 
-        for r in filtered:
-            r.pop("_difficulty", None)
+        print(f"Short route: {baseline_miles}mi, avg={short_stats['avgGradePct']}%")
+        print(f"Flat budget: {budget_miles:.2f}mi")
 
-        flat  = filtered[0]
-        short = min(filtered, key=lambda r: r["distanceInMiles"])
+        # ── Step 2: Flattest route ─────────────────────────────────────────
+        flat_path = ox.routing.shortest_path(SG, origin, destination, weight="impedance")
+        if not flat_path:
+            return jsonify({
+                "singleRoute": short_stats,
+                "message": "Only one route found for this trip.",
+            })
 
-        return jsonify({
-            "flatRoute":  flat,
-            "shortRoute": short,
-            "allRoutes":  filtered[:6]
-        })
+        flat_stats = analyze_route(flat_path, SG)
+        flat_miles = flat_stats["distanceInMiles"]
+
+        print(f"Flat route: {flat_miles}mi, avg={flat_stats['avgGradePct']}%")
+
+        # ── Step 3: Are they the same route? ──────────────────────────────
+        if abs(flat_miles - baseline_miles) <= 0.05:
+            print("Routes are effectively identical — returning single route")
+            return jsonify({
+                "singleRoute": short_stats,
+                "message": "The shortest and flattest routes are the same for this trip.",
+            })
+
+        # ── Step 4: Is flat route within budget? ──────────────────────────
+        grade_saved = round(short_stats["avgGradePct"] - flat_stats["avgGradePct"], 1)
+        distance_added = round(flat_miles - baseline_miles, 2)
+
+        if flat_miles <= budget_miles:
+            print(f"Flat route within budget — returning both")
+            return jsonify({
+                "shortRoute": short_stats,
+                "flatRoute":  flat_stats,
+                "message": f"Flat route adds {distance_added}mi but reduces average grade by {grade_saved}%.",
+            })
+        else:
+            print(f"Flat route too long ({flat_miles:.2f}mi > budget {budget_miles:.2f}mi) — returning short only")
+            return jsonify({
+                "singleRoute": short_stats,
+                "message": "No flatter route found within a reasonable distance for this trip.",
+            })
 
     except Exception as e:
         import traceback
